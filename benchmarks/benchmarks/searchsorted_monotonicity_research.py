@@ -99,10 +99,19 @@ def main() -> None:
                         f"searchsorted_N{array_size}_Q{n_queries}_"
                         f"{query_shape}_seed{seed}"
                     )
-                    expected = np.searchsorted(arr, queries)
-                    # Cheap correctness guard before timing.
-                    if expected.shape != queries.shape:
-                        raise AssertionError(name)
+                    # Independent correctness oracle for arr = arange(N).
+                    # Do not use searchsorted itself to generate expected values.
+                    q64 = queries.astype(np.int64)
+                    expected_left = np.clip(q64, 0, array_size)
+                    actual_left = np.searchsorted(arr, queries, side="left")
+                    if not np.array_equal(actual_left, expected_left):
+                        raise AssertionError(f"{name}: left mismatch")
+
+                    expected_right = np.clip(q64 + 1, 0, array_size)
+                    actual_right = np.searchsorted(arr, queries, side="right")
+                    if not np.array_equal(actual_right, expected_right):
+                        raise AssertionError(f"{name}: right mismatch")
+
                     runner.bench_time_func(name, bench, arr, queries)
 
 
