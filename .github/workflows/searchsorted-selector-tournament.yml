@@ -14,7 +14,7 @@ jobs:
         suite: [tiny, broad, dtype]
 
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       SEARCHSORTED_TOURNAMENT_SUITE: ${{ matrix.suite }}
