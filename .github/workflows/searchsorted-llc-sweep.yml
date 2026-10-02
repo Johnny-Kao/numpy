@@ -1,0 +1,65 @@
+name: Searchsorted LLC boundary sweep
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - research/searchsorted-crossover-ci
+    paths:
+      - ".ci-experiments/searchsorted_llc/**"
+      - ".github/workflows/searchsorted-llc-sweep.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    name: ${{ matrix.mode }} repeat ${{ matrix.repeat }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [normal, prefault]
+        repeat: [1, 2, 3, 4, 5, 6, 7, 8]
+
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install pinned dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y numactl
+          python -m pip install "numpy==2.5.1"
+
+      - name: Run LLC boundary sweep
+        run: |
+          mkdir -p llc-output
+          {
+            lscpu
+            lscpu -C || true
+            numactl --hardware || true
+            cat /proc/sys/kernel/perf_event_paranoid || true
+          } > llc-output/runner.txt
+
+          numactl --physcpubind=0 --membind=0 \
+            python .ci-experiments/searchsorted_llc/run_llc_sweep.py \
+            --mode ${{ matrix.mode }} \
+            --output-dir llc-output | tee llc-output/stdout.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: llc-sweep-${{ matrix.mode }}-${{ matrix.repeat }}
+          path: llc-output/
+          if-no-files-found: error
+          retention-days: 14
