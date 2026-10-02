@@ -1,0 +1,55 @@
+name: Searchsorted LLC probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - research/searchsorted-crossover-ci
+    paths:
+      - ".github/workflows/searchsorted-llc-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        repeat: [1, 2, 3, 4, 5]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install perf and numactl
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y linux-tools-common linux-tools-generic numactl || true
+
+      - name: Record hardware
+        run: |
+          mkdir -p llc-probe
+          {
+            echo "repeat=${{ matrix.repeat }}"
+            echo "runner_name=$RUNNER_NAME"
+            echo "image_os=${ImageOS:-unknown}"
+            echo "image_version=${ImageVersion:-unknown}"
+            uname -a
+            lscpu
+            lscpu -C || true
+            numactl --hardware || true
+            echo "perf_event_paranoid:"
+            cat /proc/sys/kernel/perf_event_paranoid || true
+            echo "perf version:"
+            perf --version || true
+            echo "perf stat probe:"
+            perf stat -e cycles,instructions,cache-references,cache-misses,branches,branch-misses true || true
+          } 2>&1 | tee llc-probe/probe.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: llc-probe-${{ matrix.repeat }}
+          path: llc-probe/
+          if-no-files-found: error
+          retention-days: 7
