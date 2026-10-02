@@ -5,7 +5,7 @@ This file is research-only and is not intended for upstream submission.
 
 from __future__ import annotations
 
-import argparse
+import os
 
 import numpy as np
 import pyperf
@@ -62,16 +62,8 @@ def bench(loops: int, arr: np.ndarray, queries: np.ndarray) -> float:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--variant", required=True)
-    args, remaining = parser.parse_known_args()
-
-    # Keep Runner in control of pyperf's own CLI options.
-    import sys
-    sys.argv = [sys.argv[0], *remaining]
-
     runner = pyperf.Runner()
-    runner.metadata["variant"] = args.variant
+    runner.metadata["variant"] = os.environ.get("SEARCHSORTED_VARIANT", "unknown")
     runner.metadata["numpy_version"] = np.__version__
 
     array_sizes = (1_000_000, 10_000_000)
