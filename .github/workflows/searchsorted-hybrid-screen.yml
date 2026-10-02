@@ -1,0 +1,33 @@
+name: searchsorted hybrid screen
+
+on:
+  push:
+    branches:
+      - research/searchsorted-monotonicity
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hybrid:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/searchsorted-monotonicity
+      - name: Compile hybrid benchmark
+        run: |
+          g++ -O3 -std=c++17 -march=native \
+            benchmarks/benchmarks/searchsorted_hybrid_micro.cpp \
+            -o "$RUNNER_TEMP/searchsorted_hybrid"
+      - name: Run hybrid benchmark
+        run: |
+          mkdir -p research-results
+          "$RUNNER_TEMP/searchsorted_hybrid" | tee research-results/hybrid.csv
+      - name: Upload hybrid evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: searchsorted-hybrid-results
+          path: research-results/hybrid.csv
