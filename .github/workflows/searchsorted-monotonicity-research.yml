@@ -10,14 +10,32 @@ permissions:
   contents: read
 
 jobs:
-  compare:
+  paired-compare:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: control
+            candidate_branch: research/searchsorted-monotonicity
+            candidate_name: current_repeat
+          - lane: prev_bound
+            candidate_branch: research/searchsorted-prev-bound
+            candidate_name: prev_bound
+          - lane: galloping
+            candidate_branch: research/searchsorted-galloping
+            candidate_name: galloping
+
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      BASELINE_BRANCH: research/searchsorted-monotonicity
+      CANDIDATE_BRANCH: ${{ matrix.candidate_branch }}
+      CANDIDATE_NAME: ${{ matrix.candidate_name }}
+      LANE: ${{ matrix.lane }}
 
     steps:
-      - name: Checkout research branch
+      - name: Checkout research baseline
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -35,50 +53,76 @@ jobs:
           python -m pip install pyperf
           cp benchmarks/benchmarks/searchsorted_monotonicity_research.py "$RUNNER_TEMP/bench.py"
 
-      - name: Build three variants from one checkout
-        run: |
-          mkdir -p "$RUNNER_TEMP/wheels/current" "$RUNNER_TEMP/wheels/prev" "$RUNNER_TEMP/wheels/gallop"
-
-          git checkout research/searchsorted-monotonicity
-          python -m pip wheel . -w "$RUNNER_TEMP/wheels/current"
-
-          git checkout research/searchsorted-prev-bound
-          git submodule update --init --recursive
-          python -m pip wheel . -w "$RUNNER_TEMP/wheels/prev"
-
-          git checkout research/searchsorted-galloping
-          git submodule update --init --recursive
-          python -m pip wheel . -w "$RUNNER_TEMP/wheels/gallop"
-
-      - name: Create isolated benchmark environments
-        run: |
-          python -m venv "$RUNNER_TEMP/venv-current"
-          python -m venv "$RUNNER_TEMP/venv-prev"
-          python -m venv "$RUNNER_TEMP/venv-gallop"
-
-          "$RUNNER_TEMP/venv-current/bin/pip" install pyperf "$RUNNER_TEMP"/wheels/current/numpy-*.whl
-          "$RUNNER_TEMP/venv-prev/bin/pip" install pyperf "$RUNNER_TEMP"/wheels/prev/numpy-*.whl
-          "$RUNNER_TEMP/venv-gallop/bin/pip" install pyperf "$RUNNER_TEMP"/wheels/gallop/numpy-*.whl
-
-      - name: Run paired screening benchmarks
+      - name: Record runner metadata
         run: |
           mkdir -p research-results
-          SEARCHSORTED_VARIANT=current "$RUNNER_TEMP/venv-current/bin/python" "$RUNNER_TEMP/bench.py" \
-            --fast -o research-results/current.json
-          SEARCHSORTED_VARIANT=prev_bound "$RUNNER_TEMP/venv-prev/bin/python" "$RUNNER_TEMP/bench.py" \
-            --fast -o research-results/prev_bound.json
-          SEARCHSORTED_VARIANT=galloping "$RUNNER_TEMP/venv-gallop/bin/python" "$RUNNER_TEMP/bench.py" \
-            --fast -o research-results/galloping.json
+          {
+            echo "lane=$LANE"
+            echo "baseline_branch=$BASELINE_BRANCH"
+            echo "candidate_branch=$CANDIDATE_BRANCH"
+            echo "candidate_name=$CANDIDATE_NAME"
+            echo "runner_name=$RUNNER_NAME"
+            echo "runner_os=$RUNNER_OS"
+            echo "runner_arch=$RUNNER_ARCH"
+            echo "image_os=$ImageOS"
+            echo "image_version=$ImageVersion"
+            echo "kernel=$(uname -a)"
+            echo "cpu_model=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | xargs)"
+            echo "cpu_count=$(nproc)"
+            echo "memory_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')"
+            echo "python=$(python --version 2>&1)"
+          } | tee research-results/runner-metadata.txt
 
-      - name: Compare variants
+      - name: Build baseline wheel
         run: |
-          python -m pyperf compare_to research-results/current.json research-results/prev_bound.json \
-            --table --python-names=current,prev_bound | tee research-results/current-vs-prev.txt
-          python -m pyperf compare_to research-results/current.json research-results/galloping.json \
-            --table --python-names=current,galloping | tee research-results/current-vs-galloping.txt
+          mkdir -p "$RUNNER_TEMP/wheels/baseline"
+          git checkout "$BASELINE_BRANCH"
+          git submodule update --init --recursive
+          python -m pip wheel . -w "$RUNNER_TEMP/wheels/baseline"
 
-      - name: Upload raw evidence
+      - name: Build candidate wheel
+        if: matrix.lane != 'control'
+        run: |
+          mkdir -p "$RUNNER_TEMP/wheels/candidate"
+          git checkout "$CANDIDATE_BRANCH"
+          git submodule update --init --recursive
+          python -m pip wheel . -w "$RUNNER_TEMP/wheels/candidate"
+
+      - name: Create isolated environments
+        run: |
+          python -m venv "$RUNNER_TEMP/venv-baseline"
+          "$RUNNER_TEMP/venv-baseline/bin/pip" install pyperf "$RUNNER_TEMP"/wheels/baseline/numpy-*.whl
+
+          if [ "$LANE" = "control" ]; then
+            python -m venv "$RUNNER_TEMP/venv-candidate"
+            "$RUNNER_TEMP/venv-candidate/bin/pip" install pyperf "$RUNNER_TEMP"/wheels/baseline/numpy-*.whl
+          else
+            python -m venv "$RUNNER_TEMP/venv-candidate"
+            "$RUNNER_TEMP/venv-candidate/bin/pip" install pyperf "$RUNNER_TEMP"/wheels/candidate/numpy-*.whl
+          fi
+
+      - name: Run same-machine baseline
+        run: |
+          SEARCHSORTED_VARIANT=current \
+            "$RUNNER_TEMP/venv-baseline/bin/python" "$RUNNER_TEMP/bench.py" \
+            --fast -o research-results/baseline.json
+
+      - name: Run same-machine candidate
+        run: |
+          SEARCHSORTED_VARIANT="$CANDIDATE_NAME" \
+            "$RUNNER_TEMP/venv-candidate/bin/python" "$RUNNER_TEMP/bench.py" \
+            --fast -o research-results/candidate.json
+
+      - name: Compare candidate to same-machine baseline
+        run: |
+          python -m pyperf compare_to \
+            research-results/baseline.json \
+            research-results/candidate.json \
+            --table --python-names=current,"$CANDIDATE_NAME" \
+            | tee research-results/comparison.txt
+
+      - name: Upload paired evidence
         uses: actions/upload-artifact@v4
         with:
-          name: searchsorted-monotonicity-results
+          name: searchsorted-${{ matrix.lane }}-paired-results
           path: research-results/
