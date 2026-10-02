@@ -1,9 +1,6 @@
 name: searchsorted mechanism screen
 
 on:
-  push:
-    branches:
-      - research/searchsorted-monotonicity
   workflow_dispatch:
 
 permissions:
