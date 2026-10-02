@@ -21,6 +21,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          submodules: recursive
           ref: research/searchsorted-monotonicity
 
       - name: Set up Python
@@ -42,6 +43,9 @@ jobs:
           git worktree add ../numpy-current origin/research/searchsorted-monotonicity
           git worktree add ../numpy-prev origin/research/searchsorted-prev-bound
           git worktree add ../numpy-gallop origin/research/searchsorted-galloping
+          git -C ../numpy-current submodule update --init --recursive
+          git -C ../numpy-prev submodule update --init --recursive
+          git -C ../numpy-gallop submodule update --init --recursive
 
       - name: Build isolated wheels
         run: |
