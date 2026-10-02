@@ -1,0 +1,33 @@
+name: searchsorted mechanism screen
+
+on:
+  push:
+    branches:
+      - research/searchsorted-monotonicity
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  micro:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/searchsorted-monotonicity
+      - name: Compile mechanism benchmark
+        run: |
+          g++ -O3 -std=c++17 -march=native \
+            benchmarks/benchmarks/searchsorted_monotonicity_micro.cpp \
+            -o "$RUNNER_TEMP/searchsorted_micro"
+      - name: Run mechanism benchmark
+        run: |
+          mkdir -p research-results
+          "$RUNNER_TEMP/searchsorted_micro" | tee research-results/mechanism.csv
+      - name: Upload mechanism evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: searchsorted-mechanism-results
+          path: research-results/mechanism.csv
