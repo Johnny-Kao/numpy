@@ -14,11 +14,12 @@ permissions:
 
 jobs:
   benchmark:
-    name: ubuntu-24.04 repeat ${{ matrix.repeat }}
+    name: ${{ matrix.memory_mode }} repeat ${{ matrix.repeat }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
+        memory_mode: [normal, prefault, mlock]
         repeat: [1, 2, 3, 4, 5]
 
     env:
@@ -36,8 +37,10 @@ jobs:
           python-version: "3.14"
           cache: pip
 
-      - name: Install pinned benchmark dependency
+      - name: Install pinned benchmark dependencies
         run: |
+          sudo apt-get update
+          sudo apt-get install -y numactl
           python -m pip install --upgrade pip
           python -m pip install "numpy==2.5.1"
 
@@ -46,6 +49,7 @@ jobs:
           mkdir -p benchmark-output
           {
             echo "matrix_repeat=${{ matrix.repeat }}"
+            echo "memory_mode=${{ matrix.memory_mode }}"
             echo "github_run_id=$GITHUB_RUN_ID"
             echo "github_run_attempt=$GITHUB_RUN_ATTEMPT"
             echo "runner_name=$RUNNER_NAME"
@@ -58,13 +62,18 @@ jobs:
             echo
             lscpu
             echo
-            cat /proc/cpuinfo
+            lscpu -C || true
+            echo
+            numactl --hardware || true
             echo
             free -b
             echo
             python --version
             python -c "import numpy; print('numpy', numpy.__version__)"
             gcc --version
+            echo
+            echo "ulimit -l:"
+            ulimit -l || true
             echo
             echo "cpufreq governor:"
             cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || true
@@ -74,17 +83,19 @@ jobs:
             cat /sys/devices/system/cpu/cpu0/microcode/version 2>/dev/null || true
           } | tee benchmark-output/runner.txt
 
-      - name: Run pinned single-CPU benchmark
+      - name: Run pinned CPU and memory-node benchmark
         run: |
-          taskset -c 0 python benchmarks/searchsorted_crossover/run_benchmark.py \
+          numactl --physcpubind=0 --membind=0 \
+            python benchmarks/searchsorted_crossover/run_benchmark.py \
             --output-dir benchmark-output \
+            --memory-mode ${{ matrix.memory_mode }} \
             --reps 31 \
             --warmups 8 | tee benchmark-output/stdout.txt
 
       - name: Upload raw benchmark evidence
         uses: actions/upload-artifact@v4
         with:
-          name: searchsorted-crossover-ubuntu2404-repeat-${{ matrix.repeat }}
+          name: searchsorted-crossover-${{ matrix.memory_mode }}-repeat-${{ matrix.repeat }}
           path: benchmark-output/
           if-no-files-found: error
           retention-days: 30
