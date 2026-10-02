@@ -110,13 +110,28 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
         if (std::strcmp(mode, "hybrid_sample32") == 0) {
             return 5;
         }
-        if (std::strcmp(mode, "hybrid_chunk16") == 0) {
+        if (std::strcmp(mode, "hybrid_chunk") == 0) {
             return 6;
         }
-        if (std::strcmp(mode, "hybrid_chunk64") == 0) {
+        if (std::strcmp(mode, "current_chunk") == 0) {
             return 7;
         }
+        if (std::strcmp(mode, "gallop_chunk") == 0) {
+            return 8;
+        }
         return 0;
+    }();
+
+    static const npy_intp research_chunk_size = []() {
+        const char *raw = std::getenv("NPY_SEARCHSORTED_RESEARCH_CHUNK");
+        if (raw == nullptr) {
+            return (npy_intp)16;
+        }
+        const long value = std::strtol(raw, nullptr, 10);
+        if (value < 1 || value > 4096) {
+            return (npy_intp)16;
+        }
+        return (npy_intp)value;
     }();
 
     auto run_current = [&](const char *keys, char *rets, npy_intp count) {
@@ -317,14 +332,21 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
         return;
     }
 
-    const npy_intp chunk_size = (research_mode == 6) ? 16 : 64;
+    const npy_intp chunk_size = research_chunk_size;
     for (npy_intp offset = 0; offset < key_len; offset += chunk_size) {
         const npy_intp remaining = key_len - offset;
         const npy_intp count =
                 (remaining < chunk_size) ? remaining : chunk_size;
         const char *chunk_keys = key + offset * key_str;
         char *chunk_rets = ret + offset * ret_str;
-        if (fully_nondecreasing(chunk_keys, count)) {
+
+        if (research_mode == 7) {
+            run_current(chunk_keys, chunk_rets, count);
+        }
+        else if (research_mode == 8) {
+            run_galloping(chunk_keys, chunk_rets, count);
+        }
+        else if (fully_nondecreasing(chunk_keys, count)) {
             run_galloping(chunk_keys, chunk_rets, count);
         }
         else {
