@@ -1,6 +1,9 @@
 name: searchsorted monotonicity research
 
 on:
+  push:
+    branches:
+      - research/searchsorted-monotonicity
   workflow_dispatch:
 
 permissions:
@@ -60,12 +63,12 @@ jobs:
       - name: Run paired screening benchmarks
         run: |
           mkdir -p research-results
-          "$RUNNER_TEMP/venv-current/bin/python" "$RUNNER_TEMP/bench.py" \
-            --variant current --fast -o research-results/current.json
-          "$RUNNER_TEMP/venv-prev/bin/python" "$RUNNER_TEMP/bench.py" \
-            --variant prev_bound --fast -o research-results/prev_bound.json
-          "$RUNNER_TEMP/venv-gallop/bin/python" "$RUNNER_TEMP/bench.py" \
-            --variant galloping --fast -o research-results/galloping.json
+          SEARCHSORTED_VARIANT=current "$RUNNER_TEMP/venv-current/bin/python" "$RUNNER_TEMP/bench.py" \
+            --fast -o research-results/current.json
+          SEARCHSORTED_VARIANT=prev_bound "$RUNNER_TEMP/venv-prev/bin/python" "$RUNNER_TEMP/bench.py" \
+            --fast -o research-results/prev_bound.json
+          SEARCHSORTED_VARIANT=galloping "$RUNNER_TEMP/venv-gallop/bin/python" "$RUNNER_TEMP/bench.py" \
+            --fast -o research-results/galloping.json
 
       - name: Compare variants
         run: |
