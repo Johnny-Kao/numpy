@@ -1,0 +1,90 @@
+name: searchsorted selector tournament
+
+on:
+  push:
+    branches:
+      - research/searchsorted-selector-tournament
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tournament:
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [tiny, broad, dtype]
+
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      SEARCHSORTED_TOURNAMENT_SUITE: ${{ matrix.suite }}
+
+    steps:
+      - name: Checkout tournament branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          ref: research/searchsorted-selector-tournament
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Record runner metadata
+        run: |
+          mkdir -p tournament-results
+          {
+            echo "suite=$SEARCHSORTED_TOURNAMENT_SUITE"
+            echo "runner_name=$RUNNER_NAME"
+            echo "runner_os=$RUNNER_OS"
+            echo "runner_arch=$RUNNER_ARCH"
+            echo "image_os=$ImageOS"
+            echo "image_version=$ImageVersion"
+            echo "kernel=$(uname -a)"
+            echo "cpu_model=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | xargs)"
+            echo "cpu_count=$(nproc)"
+            echo "memory_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')"
+            echo "python=$(python --version 2>&1)"
+          } | tee tournament-results/runner-metadata.txt
+
+      - name: Build one tournament wheel
+        run: |
+          python -m pip install --upgrade pip
+          mkdir -p "$RUNNER_TEMP/wheels"
+          python -m pip wheel . -w "$RUNNER_TEMP/wheels"
+
+      - name: Create benchmark environment
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install "$RUNNER_TEMP"/wheels/numpy-*.whl
+
+      - name: Run selector tournament
+        shell: bash
+        run: |
+          set -euo pipefail
+          BENCH=benchmarks/benchmarks/searchsorted_selector_tournament.py
+          SUITE="$SEARCHSORTED_TOURNAMENT_SUITE"
+
+          NPY_SEARCHSORTED_RESEARCH_MODE=current           SEARCHSORTED_TOURNAMENT_OUT="tournament-results/current-before-$SUITE.json"             "$RUNNER_TEMP/venv/bin/python" "$BENCH"
+
+          for MODE in             prev_bound             galloping             hybrid_full             hybrid_sample16             hybrid_sample32             hybrid_chunk16             hybrid_chunk64
+          do
+            NPY_SEARCHSORTED_RESEARCH_MODE="$MODE"             SEARCHSORTED_TOURNAMENT_OUT="tournament-results/$MODE-$SUITE.json"               "$RUNNER_TEMP/venv/bin/python" "$BENCH"
+          done
+
+          NPY_SEARCHSORTED_RESEARCH_MODE=current           SEARCHSORTED_TOURNAMENT_OUT="tournament-results/current-after-$SUITE.json"             "$RUNNER_TEMP/venv/bin/python" "$BENCH"
+
+      - name: Summarize same-runner ratios
+        run: |
+          "$RUNNER_TEMP/venv/bin/python"             benchmarks/benchmarks/searchsorted_selector_analyze.py             tournament-results "$SEARCHSORTED_TOURNAMENT_SUITE"             | tee "tournament-results/console-summary-$SEARCHSORTED_TOURNAMENT_SUITE.txt"
+
+      - name: Upload tournament evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: searchsorted-selector-tournament-${{ matrix.suite }}
+          path: tournament-results/
