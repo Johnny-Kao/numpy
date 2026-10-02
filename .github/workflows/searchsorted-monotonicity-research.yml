@@ -33,26 +33,22 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install pyperf
+          cp benchmarks/benchmarks/searchsorted_monotonicity_research.py "$RUNNER_TEMP/bench.py"
 
-      - name: Create worktrees
-        run: |
-          git fetch origin \
-            research/searchsorted-monotonicity \
-            research/searchsorted-prev-bound \
-            research/searchsorted-galloping
-          git worktree add ../numpy-current origin/research/searchsorted-monotonicity
-          git worktree add ../numpy-prev origin/research/searchsorted-prev-bound
-          git worktree add ../numpy-gallop origin/research/searchsorted-galloping
-          git -C ../numpy-current submodule update --init --recursive
-          git -C ../numpy-prev submodule update --init --recursive
-          git -C ../numpy-gallop submodule update --init --recursive
-
-      - name: Build isolated wheels
+      - name: Build three variants from one checkout
         run: |
           mkdir -p "$RUNNER_TEMP/wheels/current" "$RUNNER_TEMP/wheels/prev" "$RUNNER_TEMP/wheels/gallop"
-          python -m pip wheel ../numpy-current -w "$RUNNER_TEMP/wheels/current"
-          python -m pip wheel ../numpy-prev -w "$RUNNER_TEMP/wheels/prev"
-          python -m pip wheel ../numpy-gallop -w "$RUNNER_TEMP/wheels/gallop"
+
+          git checkout research/searchsorted-monotonicity
+          python -m pip wheel . -w "$RUNNER_TEMP/wheels/current"
+
+          git checkout research/searchsorted-prev-bound
+          git submodule update --init --recursive
+          python -m pip wheel . -w "$RUNNER_TEMP/wheels/prev"
+
+          git checkout research/searchsorted-galloping
+          git submodule update --init --recursive
+          python -m pip wheel . -w "$RUNNER_TEMP/wheels/gallop"
 
       - name: Create isolated benchmark environments
         run: |
@@ -67,11 +63,11 @@ jobs:
       - name: Run paired screening benchmarks
         run: |
           mkdir -p research-results
-          "$RUNNER_TEMP/venv-current/bin/python" benchmarks/benchmarks/searchsorted_monotonicity_research.py \
+          "$RUNNER_TEMP/venv-current/bin/python" "$RUNNER_TEMP/bench.py" \
             --variant current --fast -o research-results/current.json
-          "$RUNNER_TEMP/venv-prev/bin/python" benchmarks/benchmarks/searchsorted_monotonicity_research.py \
+          "$RUNNER_TEMP/venv-prev/bin/python" "$RUNNER_TEMP/bench.py" \
             --variant prev_bound --fast -o research-results/prev_bound.json
-          "$RUNNER_TEMP/venv-gallop/bin/python" benchmarks/benchmarks/searchsorted_monotonicity_research.py \
+          "$RUNNER_TEMP/venv-gallop/bin/python" "$RUNNER_TEMP/bench.py" \
             --variant galloping --fast -o research-results/galloping.json
 
       - name: Compare variants
