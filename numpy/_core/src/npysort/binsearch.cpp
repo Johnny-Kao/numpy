@@ -10,6 +10,8 @@
 #include "numpy_tag.hpp"
 
 #include <array>
+#include <cstdlib>
+#include <cstring>
 #include <functional>  // for std::less and std::less_equal
 
 // Enumerators for the variant of binsearch
@@ -65,111 +67,269 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
 {
     using T = typename Tag::type;
     auto cmp = side_to_cmp<Tag, side>::value;
+    auto less = Tag::less;
 
-    // If the array length is 0 we return all 0s
     if (arr_len <= 0) {
         for (npy_intp i = 0; i < key_len; ++i) {
             *(npy_intp *)(ret + i * ret_str) = 0;
         }
         return;
     }
-
-    /*
-    In this binary search implementation, the candidate insertion indices for
-    the j-th key are in the range [base_j, base_j+length] and on each
-    iteration we pick a pivot at the mid-point of the range to compare against
-    the j-th key. Depending on the comparison result, we adjust the base_j and
-    halve the length of the interval.
-
-    To batch multiple queries, we process all bases with a fixed length. The
-    length is halved on each iteration of an outer loop and all bases are
-    updated in an inner loop. To avoid consuming extra memory, we use the
-    result array to store intermediate values of each base until they become
-    the final result in the last step.
-
-    There are two benefits of this approach:
-
-    1. Cache locallity of pivots. In early iterations each key is compared
-    against the same set of pivots. For example, in the first iteration all
-    keys are compared against the median. In the second iteration, all keys
-    end up being compared against 1st and 3rd quartiles.
-
-    2. Independent calculations for out-of-order execution. In the single-key
-    version, step i+1 depends on computation of step i. Meaning that step i+1
-    must wait for step i to complete before proceeding. When batching multiple
-    keys, we compute each step for all keys before continuing on the next
-    step. All the computations at a given step are independent across
-    different keys. Meaning that the CPU can execute multiple keys
-    out-of-order in parallel.
-
-    Invariant (for every j):
-    - cmp(arr[i], key_val_j) == true  for all i < base_j
-    - cmp(arr[i], key_val_j) == false for all i >= base_j + length
-
-    where cmp(a, b) operator depends on side input:
-    - For side = "left", cmp operator is <
-    - For side = "right", cmp operator is <=
-
-    The insertion index candidates are in range [base, base+length] and
-    on each iteration we shrink the range into either
-        [base, ceil(length / 2)]
-    or
-        [base + floor(length / 2), ceil(length / 2)]
-
-    The outer loop terminates when length = 1. At that point, for each j
-    the insertion order is either base_j or base_j + 1. An additional
-    comparison is required to determine which of the two values.
-    If cmp(arr[base_j], key_val_j) == true, insertion index is base_j + 1.
-    Otherwise the insertion order is base_j.
-
-    Optimization: we unroll the first iteration for the following reasons:
-        1. ret is not initialized with the bases, so we save |keys| writes
-        by not having to initialize it with 0s.
-        2. By assuming the initial base for every key is 0, we also save
-        |keys| reads.
-        3. In the first iteration, all elements are compared against the
-        median. So we can store it in a variable and use it for all keys.
-
-    This initial block replaces the initialization loop that is used for the
-    arr_len==0 case. Note that when arr_len = 1, then half is 0 so the
-    following block initializes the array as with 0s.
-    */
-    npy_intp interval_length = arr_len;
-    npy_intp half = interval_length >> 1;
-    interval_length -= half; // length -> ceil(length / 2)
-
-    npy_intp base = 0;
-    const T mid_val = *(const T *)(arr + (base + half) * arr_str);
-
-    for (npy_intp i = 0; i < key_len; ++i) {
-        const T key_val = *(const T *)(key + i * key_str);
-        *(npy_intp *)(ret + i * ret_str) = cmp(mid_val, key_val) * half;
+    if (key_len == 0) {
+        return;
     }
 
-    while (interval_length > 1) {
-        npy_intp half = interval_length >> 1;
-        interval_length -= half; // length -> ceil(length / 2)
-
-        for (npy_intp i = 0; i < key_len; ++i) {
-            npy_intp &base = *(npy_intp *)(ret + i * ret_str);
-            const T mid_val = *(const T *)(arr + (base + half) * arr_str);
-            const T key_val = *(const T *)(key + i * key_str);
-            base += cmp(mid_val, key_val) * half;
+    /*
+     * Research-only selector tournament.
+     *
+     * The mode is read once per dtype/side specialization. The benchmark
+     * correctness warm-up initializes it before timing, so getenv/strcmp are
+     * not part of the timed search loop.
+     *
+     * This branch is intentionally not an upstream/production patch. It lets
+     * one wheel exercise several execution policies so GitHub Actions can
+     * amortize checkout/build/startup cost across a broad experiment matrix.
+     */
+    static const int research_mode = []() {
+        const char *mode = std::getenv("NPY_SEARCHSORTED_RESEARCH_MODE");
+        if (mode == nullptr || std::strcmp(mode, "current") == 0) {
+            return 0;
         }
+        if (std::strcmp(mode, "prev_bound") == 0) {
+            return 1;
+        }
+        if (std::strcmp(mode, "galloping") == 0) {
+            return 2;
+        }
+        if (std::strcmp(mode, "hybrid_full") == 0) {
+            return 3;
+        }
+        if (std::strcmp(mode, "hybrid_sample16") == 0) {
+            return 4;
+        }
+        if (std::strcmp(mode, "hybrid_sample32") == 0) {
+            return 5;
+        }
+        if (std::strcmp(mode, "hybrid_chunk16") == 0) {
+            return 6;
+        }
+        if (std::strcmp(mode, "hybrid_chunk64") == 0) {
+            return 7;
+        }
+        return 0;
+    }();
+
+    auto run_current = [&](const char *keys, char *rets, npy_intp count) {
+        if (count == 0) {
+            return;
+        }
+
+        npy_intp interval_length = arr_len;
+        npy_intp half = interval_length >> 1;
+        interval_length -= half;
+
+        const T mid_val = *(const T *)(arr + half * arr_str);
+        for (npy_intp i = 0; i < count; ++i) {
+            const T key_val = *(const T *)(keys + i * key_str);
+            *(npy_intp *)(rets + i * ret_str) = cmp(mid_val, key_val) * half;
+        }
+
+        while (interval_length > 1) {
+            half = interval_length >> 1;
+            interval_length -= half;
+            for (npy_intp i = 0; i < count; ++i) {
+                npy_intp &base = *(npy_intp *)(rets + i * ret_str);
+                const T pivot = *(const T *)(arr + (base + half) * arr_str);
+                const T key_val = *(const T *)(keys + i * key_str);
+                base += cmp(pivot, key_val) * half;
+            }
+        }
+
+        for (npy_intp i = 0; i < count; ++i) {
+            npy_intp &base = *(npy_intp *)(rets + i * ret_str);
+            const T key_val = *(const T *)(keys + i * key_str);
+            base += cmp(*(const T *)(arr + base * arr_str), key_val);
+        }
+    };
+
+    auto run_prev_bound = [&](const char *keys, char *rets, npy_intp count) {
+        if (count == 0) {
+            return;
+        }
+
+        npy_intp min_idx = 0;
+        npy_intp max_idx = arr_len;
+        T last_key_val = *(const T *)keys;
+
+        for (npy_intp i = 0; i < count; ++i) {
+            const T key_val = *(const T *)(keys + i * key_str);
+            if (cmp(last_key_val, key_val)) {
+                max_idx = arr_len;
+            }
+            else {
+                min_idx = 0;
+                max_idx = (max_idx < arr_len) ? (max_idx + 1) : arr_len;
+            }
+            last_key_val = key_val;
+
+            while (min_idx < max_idx) {
+                const npy_intp mid_idx =
+                        min_idx + ((max_idx - min_idx) >> 1);
+                const T pivot = *(const T *)(arr + mid_idx * arr_str);
+                if (cmp(pivot, key_val)) {
+                    min_idx = mid_idx + 1;
+                }
+                else {
+                    max_idx = mid_idx;
+                }
+            }
+            *(npy_intp *)(rets + i * ret_str) = min_idx;
+        }
+    };
+
+    auto run_galloping = [&](const char *keys, char *rets, npy_intp count) {
+        if (count == 0) {
+            return;
+        }
+
+        T last_key_val = *(const T *)keys;
+        npy_intp previous_pos = 0;
+
+        for (npy_intp i = 0; i < count; ++i) {
+            const T key_val = *(const T *)(keys + i * key_str);
+            npy_intp min_idx = 0;
+            npy_intp max_idx = arr_len;
+
+            if (i > 0 && !less(key_val, last_key_val)) {
+                min_idx = previous_pos;
+                if (min_idx < arr_len &&
+                        cmp(*(const T *)(arr + min_idx * arr_str), key_val)) {
+                    const npy_intp origin = min_idx;
+                    npy_intp step = 1;
+                    min_idx = origin + 1;
+
+                    while (true) {
+                        const npy_intp remaining = arr_len - 1 - origin;
+                        if (step > remaining) {
+                            max_idx = arr_len;
+                            break;
+                        }
+                        const npy_intp probe = origin + step;
+                        const T probe_val =
+                                *(const T *)(arr + probe * arr_str);
+                        if (!cmp(probe_val, key_val)) {
+                            max_idx = probe + 1;
+                            break;
+                        }
+                        min_idx = probe + 1;
+                        if (step > (remaining >> 1)) {
+                            max_idx = arr_len;
+                            break;
+                        }
+                        step <<= 1;
+                    }
+                }
+                else {
+                    max_idx =
+                            (min_idx < arr_len) ? (min_idx + 1) : arr_len;
+                }
+            }
+
+            while (min_idx < max_idx) {
+                const npy_intp mid_idx =
+                        min_idx + ((max_idx - min_idx) >> 1);
+                const T pivot = *(const T *)(arr + mid_idx * arr_str);
+                if (cmp(pivot, key_val)) {
+                    min_idx = mid_idx + 1;
+                }
+                else {
+                    max_idx = mid_idx;
+                }
+            }
+
+            *(npy_intp *)(rets + i * ret_str) = min_idx;
+            previous_pos = min_idx;
+            last_key_val = key_val;
+        }
+    };
+
+    auto fully_nondecreasing =
+            [&](const char *keys, npy_intp count) -> bool {
+        for (npy_intp i = 1; i < count; ++i) {
+            const T prev = *(const T *)(keys + (i - 1) * key_str);
+            const T cur = *(const T *)(keys + i * key_str);
+            if (less(cur, prev)) {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    auto sampled_nondecreasing =
+            [&](const char *keys, npy_intp count, npy_intp samples) -> bool {
+        if (count < 2) {
+            return true;
+        }
+        const npy_intp checks = (count - 1 < samples) ? count - 1 : samples;
+        for (npy_intp j = 1; j <= checks; ++j) {
+            npy_intp i = (j * (count - 1)) / checks;
+            if (i < 1) {
+                i = 1;
+            }
+            const T prev = *(const T *)(keys + (i - 1) * key_str);
+            const T cur = *(const T *)(keys + i * key_str);
+            if (less(cur, prev)) {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    if (research_mode == 0) {
+        run_current(key, ret, key_len);
+        return;
+    }
+    if (research_mode == 1) {
+        run_prev_bound(key, ret, key_len);
+        return;
+    }
+    if (research_mode == 2) {
+        run_galloping(key, ret, key_len);
+        return;
+    }
+    if (research_mode == 3) {
+        if (fully_nondecreasing(key, key_len)) {
+            run_galloping(key, ret, key_len);
+        }
+        else {
+            run_current(key, ret, key_len);
+        }
+        return;
+    }
+    if (research_mode == 4 || research_mode == 5) {
+        const npy_intp samples = (research_mode == 4) ? 16 : 32;
+        if (sampled_nondecreasing(key, key_len, samples)) {
+            run_galloping(key, ret, key_len);
+        }
+        else {
+            run_current(key, ret, key_len);
+        }
+        return;
     }
 
-    /*
-    At this point interval_length == 1, so the candidates are in the 
-    interval [base, base + 1].
-
-    We have two options:
-        If cmp(arr[base], key_val) == true, insertion index is base + 1
-        Otherwise the insertion order is just base
-    */
-    for (npy_intp i = 0; i < key_len; ++i) {
-        npy_intp &base = *(npy_intp *)(ret + i * ret_str);
-        const T key_val = *(const T *)(key + i * key_str);
-        base += cmp(*(const T *)(arr + base * arr_str), key_val);
+    const npy_intp chunk_size = (research_mode == 6) ? 16 : 64;
+    for (npy_intp offset = 0; offset < key_len; offset += chunk_size) {
+        const npy_intp remaining = key_len - offset;
+        const npy_intp count =
+                (remaining < chunk_size) ? remaining : chunk_size;
+        const char *chunk_keys = key + offset * key_str;
+        char *chunk_rets = ret + offset * ret_str;
+        if (fully_nondecreasing(chunk_keys, count)) {
+            run_galloping(chunk_keys, chunk_rets, count);
+        }
+        else {
+            run_current(chunk_keys, chunk_rets, count);
+        }
     }
 }
 
