@@ -70,14 +70,32 @@ jobs:
           BENCH=benchmarks/benchmarks/searchsorted_selector_tournament.py
           SUITE="$SEARCHSORTED_TOURNAMENT_SUITE"
 
-          NPY_SEARCHSORTED_RESEARCH_MODE=current           SEARCHSORTED_TOURNAMENT_OUT="tournament-results/current-before-$SUITE.json"             "$RUNNER_TEMP/venv/bin/python" "$BENCH"
+          NPY_SEARCHSORTED_RESEARCH_MODE=current \
+          SEARCHSORTED_TOURNAMENT_OUT="tournament-results/current-before-$SUITE.json" \
+            "$RUNNER_TEMP/venv/bin/python" "$BENCH"
 
-          for MODE in             prev_bound             galloping             hybrid_full             hybrid_sample16             hybrid_sample32             hybrid_chunk16             hybrid_chunk64
+          for MODE in prev_bound galloping hybrid_full hybrid_sample16 hybrid_sample32
           do
-            NPY_SEARCHSORTED_RESEARCH_MODE="$MODE"             SEARCHSORTED_TOURNAMENT_OUT="tournament-results/$MODE-$SUITE.json"               "$RUNNER_TEMP/venv/bin/python" "$BENCH"
+            NPY_SEARCHSORTED_RESEARCH_MODE="$MODE" \
+            SEARCHSORTED_TOURNAMENT_OUT="tournament-results/$MODE-$SUITE.json" \
+              "$RUNNER_TEMP/venv/bin/python" "$BENCH"
           done
 
-          NPY_SEARCHSORTED_RESEARCH_MODE=current           SEARCHSORTED_TOURNAMENT_OUT="tournament-results/current-after-$SUITE.json"             "$RUNNER_TEMP/venv/bin/python" "$BENCH"
+          for CHUNK in 4 8 16 32 64 128
+          do
+            for MODE in current_chunk hybrid_chunk gallop_chunk
+            do
+              LABEL="${MODE}${CHUNK}"
+              NPY_SEARCHSORTED_RESEARCH_MODE="$MODE" \
+              NPY_SEARCHSORTED_RESEARCH_CHUNK="$CHUNK" \
+              SEARCHSORTED_TOURNAMENT_OUT="tournament-results/$LABEL-$SUITE.json" \
+                "$RUNNER_TEMP/venv/bin/python" "$BENCH"
+            done
+          done
+
+          NPY_SEARCHSORTED_RESEARCH_MODE=current \
+          SEARCHSORTED_TOURNAMENT_OUT="tournament-results/current-after-$SUITE.json" \
+            "$RUNNER_TEMP/venv/bin/python" "$BENCH"
 
       - name: Summarize same-runner ratios
         run: |
