@@ -17,8 +17,10 @@ import numpy as np
 
 
 MODE = os.environ["NPY_SEARCHSORTED_RESEARCH_MODE"]
+CHUNK = int(os.environ.get("NPY_SEARCHSORTED_RESEARCH_CHUNK", "0"))
 SUITE = os.environ.get("SEARCHSORTED_TOURNAMENT_SUITE", "broad")
-OUT = Path(os.environ.get("SEARCHSORTED_TOURNAMENT_OUT", f"{MODE}-{SUITE}.json"))
+LABEL = MODE if CHUNK <= 0 else f"{MODE}{CHUNK}"
+OUT = Path(os.environ.get("SEARCHSORTED_TOURNAMENT_OUT", f"{LABEL}-{SUITE}.json"))
 
 
 def make_queries(n: int, q: int, shape: str, dtype: np.dtype, seed: int = 42) -> np.ndarray:
@@ -27,6 +29,41 @@ def make_queries(n: int, q: int, shape: str, dtype: np.dtype, seed: int = 42) ->
         return rng.integers(-n // 10, n + n // 10, size=q, dtype=np.int64).astype(dtype)
 
     start = n // 10
+
+    if shape == "descending":
+        hi = min(n - 1, start + max(q * 4, 1024))
+        return np.linspace(hi, start, q, dtype=np.int64).astype(dtype)
+
+    if shape == "alternating":
+        base = start + np.arange(q, dtype=np.int64)
+        swing = np.where(np.arange(q) % 2 == 0, 64, -64)
+        return np.clip(base + swing, -n // 10, n + n // 10).astype(dtype)
+
+    if shape == "duplicates":
+        vals = start + (np.arange(q, dtype=np.int64) // 8)
+        return vals.astype(dtype)
+
+    if shape == "block_sorted":
+        block = 16
+        vals = np.empty(q, dtype=np.int64)
+        cursor = 0
+        blocks = []
+        while cursor < q:
+            width = min(block, q - cursor)
+            base = start + cursor * 8
+            blocks.append(np.arange(base, base + width, dtype=np.int64))
+            cursor += width
+        order = np.arange(len(blocks))
+        rng.shuffle(order)
+        vals = np.concatenate([blocks[i] for i in order])
+        return vals.astype(dtype)
+
+    if shape == "reversal_bursts":
+        vals = start + np.arange(q, dtype=np.int64)
+        for i in range(31, q, 32):
+            lo = max(0, i - 4)
+            vals[lo:i + 1] = vals[lo:i + 1][::-1]
+        return vals.astype(dtype)
     if shape == "dense":
         steps = np.ones(q, dtype=np.int64)
     elif shape == "medium":
@@ -57,20 +94,20 @@ def suite_cases() -> tuple[tuple[int, ...], tuple[int, ...], tuple[str, ...], tu
         return (
             (10_000, 1_000_000),
             (1, 4, 16, 64),
-            ("dense", "mostly_monotonic", "random"),
+            ("dense", "mostly_monotonic", "random", "alternating", "duplicates"),
             (np.dtype("int32"), np.dtype("int64")),
         )
     if SUITE == "dtype":
         return (
             (1_000_000, 10_000_000),
             (1_000, 100_000),
-            ("dense", "medium", "mostly_monotonic", "random"),
+            ("dense", "medium", "mostly_monotonic", "random", "descending", "alternating", "duplicates", "block_sorted", "reversal_bursts"),
             (np.dtype("int64"),),
         )
     return (
         (1_000_000, 10_000_000),
         (1_000, 100_000),
-        ("dense", "medium", "sparse", "clustered", "mostly_monotonic", "random"),
+        ("dense", "medium", "sparse", "clustered", "mostly_monotonic", "random", "descending", "alternating", "duplicates", "block_sorted", "reversal_bursts"),
         (np.dtype("int32"),),
     )
 
@@ -135,6 +172,8 @@ def main() -> None:
                         rows.append(
                             {
                                 "mode": MODE,
+                                "chunk": CHUNK,
+                                "label": LABEL,
                                 "suite": SUITE,
                                 "dtype": dtype.name,
                                 "n": n,
@@ -147,12 +186,14 @@ def main() -> None:
 
     payload = {
         "mode": MODE,
+        "chunk": CHUNK,
+        "label": LABEL,
         "suite": SUITE,
         "numpy_version": np.__version__,
         "rows": rows,
     }
     OUT.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    print(f"{MODE} {SUITE}: {len(rows)} cases -> {OUT}")
+    print(f"{LABEL} {SUITE}: {len(rows)} cases -> {OUT}")
 
 
 if __name__ == "__main__":
