@@ -1,9 +1,6 @@
 name: searchsorted monotonicity research
 
 on:
-  push:
-    branches:
-      - research/searchsorted-monotonicity
   workflow_dispatch:
 
 permissions:
