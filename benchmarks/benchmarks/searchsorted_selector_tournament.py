@@ -18,8 +18,14 @@ import numpy as np
 
 MODE = os.environ["NPY_SEARCHSORTED_RESEARCH_MODE"]
 CHUNK = int(os.environ.get("NPY_SEARCHSORTED_RESEARCH_CHUNK", "0"))
+POLICY = int(os.environ.get("NPY_SEARCHSORTED_RESEARCH_POLICY", "-1"))
 SUITE = os.environ.get("SEARCHSORTED_TOURNAMENT_SUITE", "broad")
-LABEL = MODE if CHUNK <= 0 else f"{MODE}{CHUNK}"
+if MODE == "adaptive":
+    LABEL = f"adaptive_p{POLICY}"
+elif CHUNK > 0:
+    LABEL = f"{MODE}{CHUNK}"
+else:
+    LABEL = MODE
 OUT = Path(os.environ.get("SEARCHSORTED_TOURNAMENT_OUT", f"{LABEL}-{SUITE}.json"))
 
 
@@ -90,6 +96,34 @@ def make_queries(n: int, q: int, shape: str, dtype: np.dtype, seed: int = 42) ->
 
 
 def suite_cases() -> tuple[tuple[int, ...], tuple[int, ...], tuple[str, ...], tuple[np.dtype, ...]]:
+    if SUITE == "adaptive_tiny":
+        return (
+            (1_000_000,),
+            (1, 4, 16, 32, 64, 128),
+            ("dense", "mostly_monotonic", "random", "alternating", "duplicates"),
+            (np.dtype("int32"), np.dtype("int64")),
+        )
+    if SUITE == "adaptive_mid":
+        return (
+            (1_000_000, 10_000_000),
+            (256, 512, 1_024, 2_048, 4_096, 8_192),
+            ("dense", "medium", "mostly_monotonic", "random", "block_sorted", "reversal_bursts"),
+            (np.dtype("int32"),),
+        )
+    if SUITE == "adaptive_large":
+        return (
+            (1_000_000, 10_000_000),
+            (16_384, 65_536, 100_000),
+            ("dense", "medium", "sparse", "mostly_monotonic", "random", "block_sorted", "reversal_bursts"),
+            (np.dtype("int32"),),
+        )
+    if SUITE == "adaptive_dtype":
+        return (
+            (1_000_000, 10_000_000),
+            (256, 1_024, 8_192, 65_536),
+            ("dense", "medium", "mostly_monotonic", "random", "alternating", "duplicates"),
+            (np.dtype("int64"),),
+        )
     if SUITE == "tiny":
         return (
             (10_000, 1_000_000),
@@ -173,6 +207,7 @@ def main() -> None:
                             {
                                 "mode": MODE,
                                 "chunk": CHUNK,
+                                "policy": POLICY,
                                 "label": LABEL,
                                 "suite": SUITE,
                                 "dtype": dtype.name,
@@ -187,6 +222,7 @@ def main() -> None:
     payload = {
         "mode": MODE,
         "chunk": CHUNK,
+        "policy": POLICY,
         "label": LABEL,
         "suite": SUITE,
         "numpy_version": np.__version__,
