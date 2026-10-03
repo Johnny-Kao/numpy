@@ -20,7 +20,10 @@ MODE = os.environ["NPY_SEARCHSORTED_RESEARCH_MODE"]
 CHUNK = int(os.environ.get("NPY_SEARCHSORTED_RESEARCH_CHUNK", "0"))
 POLICY = int(os.environ.get("NPY_SEARCHSORTED_RESEARCH_POLICY", "-1"))
 SUITE = os.environ.get("SEARCHSORTED_TOURNAMENT_SUITE", "broad")
-if MODE == "adaptive":
+EXPLICIT_LABEL = os.environ.get("NPY_SEARCHSORTED_RESEARCH_LABEL", "")
+if EXPLICIT_LABEL:
+    LABEL = EXPLICIT_LABEL
+elif MODE == "adaptive":
     LABEL = f"adaptive_p{POLICY}"
 elif CHUNK > 0:
     LABEL = f"{MODE}{CHUNK}"
@@ -128,6 +131,13 @@ def suite_cases() -> tuple[tuple[int, ...], tuple[int, ...], tuple[str, ...], tu
         return (
             (10_000_000, 100_000_000),
             (100_000, 1_000_000),
+            ("dense", "medium", "sparse", "mostly_monotonic", "random", "block_sorted", "reversal_bursts"),
+            (np.dtype("int32"),),
+        )
+    if SUITE == "adaptive_fine":
+        return (
+            (1_000_000, 10_000_000, 100_000_000),
+            (1_024, 8_192, 100_000, 1_000_000),
             ("dense", "medium", "sparse", "mostly_monotonic", "random", "block_sorted", "reversal_bursts"),
             (np.dtype("int32"),),
         )
