@@ -1,9 +1,6 @@
 name: searchsorted early locality gate matrix
 
 on:
-  push:
-    branches:
-      - research/searchsorted-selector-tournament
   workflow_dispatch:
 
 permissions:
