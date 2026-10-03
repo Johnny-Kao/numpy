@@ -1,0 +1,178 @@
+name: searchsorted activation crossover convergence
+
+on:
+  push:
+    branches:
+      - research/searchsorted-selector-tournament
+    paths:
+      - .github/workflows/searchsorted-activation-crossover.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: searchsorted-activation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  converge:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: micro-1vcpu-2gb
+            cpus: 1
+            mem_kb: 2097152
+          - profile: small-2vcpu-4gb
+            cpus: 2
+            mem_kb: 4194304
+          - profile: standard-4vcpu-8gb
+            cpus: 4
+            mem_kb: 8388608
+          - profile: standard-4vcpu-14gb
+            cpus: 4
+            mem_kb: 14680064
+
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PROFILE_NAME: ${{ matrix.profile }}
+      PROFILE_CPUS: ${{ matrix.cpus }}
+      PROFILE_MEM_KB: ${{ matrix.mem_kb }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          ref: research/searchsorted-selector-tournament
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Record runner metadata
+        run: |
+          mkdir -p activation-results
+          {
+            echo "profile=$PROFILE_NAME"
+            echo "logical_cpus=$PROFILE_CPUS"
+            echo "logical_mem_kb=$PROFILE_MEM_KB"
+            echo "host_cpu=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | xargs)"
+            echo "host_nproc=$(nproc)"
+            echo "host_mem_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')"
+          } | tee activation-results/runner-metadata.txt
+
+      - name: Build one research wheel
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          mkdir -p "$RUNNER_TEMP/wheels"
+          python -m pip wheel . -w "$RUNNER_TEMP/wheels"
+
+      - name: Create benchmark environment
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install "$RUNNER_TEMP"/wheels/numpy-*.whl
+
+      - name: Run activation decision tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          BENCH=benchmarks/benchmarks/searchsorted_selector_tournament.py
+          ANALYZE=benchmarks/benchmarks/searchsorted_activation_analyze.py
+          CPULIST="0-$((PROFILE_CPUS-1))"
+          THRESHOLDS=(64 128 256 512 1024 2048 4096 8192 16384 32768)
+
+          run_case () {
+            local label="$1"
+            local suite="$2"
+            shift 2
+            (
+              ulimit -v "$PROFILE_MEM_KB"
+              taskset -c "$CPULIST" env "$@"                 SEARCHSORTED_TOURNAMENT_SUITE="$suite"                 SEARCHSORTED_TOURNAMENT_OUT="activation-results/$label-$suite.json"                 NPY_SEARCHSORTED_RESEARCH_LABEL="$label"                 "$RUNNER_TEMP/venv/bin/python" "$BENCH"
+            )
+          }
+
+          run_current () {
+            run_case "$1" "$2" NPY_SEARCHSORTED_RESEARCH_MODE=current
+          }
+
+          run_threshold () {
+            local stage="$1"
+            local threshold="$2"
+            local suite="$3"
+            run_case "$stage-t$threshold" "$suite"               NPY_SEARCHSORTED_RESEARCH_MODE=coarse_p0_nearfree               NPY_SEARCHSORTED_RESEARCH_POLICY=3               NPY_SS_COARSE_OBS=16               NPY_SS_ACTIVATE_Q="$threshold"
+          }
+
+          # Layer 1: full coarse threshold sweep on a cheap crossover suite.
+          S1=activation_screen
+          run_current current-before "$S1"
+          for t in "${THRESHOLDS[@]}"; do
+            run_threshold stage1 "$t" "$S1"
+          done
+          run_current current-mid "$S1"
+          run_current current-after "$S1"
+          "$RUNNER_TEMP/venv/bin/python" "$ANALYZE" activation-results "$S1"             --select 3 --out activation-results/stage1-decision.json             | tee activation-results/stage1-summary.txt
+
+          mapfile -t FINAL_THRESHOLDS < <(
+            "$RUNNER_TEMP/venv/bin/python" - <<'PY'
+          import json, re
+          d=json.load(open("activation-results/stage1-decision.json"))
+          for name in d.get("selected", []):
+              m=re.search(r"t(\d+)", name)
+              if m:
+                  print(m.group(1))
+          PY
+          )
+          if [[ "${#FINAL_THRESHOLDS[@]}" -eq 0 ]]; then
+            echo "No Layer-1 threshold finalist." | tee activation-results/stop-reason.txt
+            exit 0
+          fi
+
+          # Layer 2: cross-dtype / cross-N boundary validation.
+          S2=activation_boundary
+          run_current current-before "$S2"
+          for t in "${FINAL_THRESHOLDS[@]}"; do
+            run_threshold stage2 "$t" "$S2"
+          done
+          run_current current-mid "$S2"
+          run_current current-after "$S2"
+          "$RUNNER_TEMP/venv/bin/python" "$ANALYZE" activation-results "$S2"             --select 1 --gate --out activation-results/stage2-decision.json             | tee activation-results/stage2-summary.txt
+
+          BEST_THRESHOLD=$(
+            "$RUNNER_TEMP/venv/bin/python" - <<'PY'
+          import json, re
+          d=json.load(open("activation-results/stage2-decision.json"))
+          passing=d.get("passing", [])
+          if passing:
+              m=re.search(r"t(\d+)", passing[0])
+              if m:
+                  print(m.group(1))
+          PY
+          )
+          if [[ -z "$BEST_THRESHOLD" ]]; then
+            echo "Layer-2 gate failed: no stable activation threshold."               | tee activation-results/stop-reason.txt
+            exit 0
+          fi
+          echo "$BEST_THRESHOLD" > activation-results/frozen-threshold-candidate.txt
+
+          # Layer 3: production gate for the single lowest safe threshold.
+          for S3 in online_broad adaptive_stress tiny; do
+            run_current current-before "$S3"
+            run_threshold stage3 "$BEST_THRESHOLD" "$S3"
+            run_current current-mid "$S3"
+            run_current current-after "$S3"
+            "$RUNNER_TEMP/venv/bin/python" "$ANALYZE" activation-results "$S3"               --out "activation-results/stage3-$S3-summary.json"               | tee "activation-results/stage3-$S3-summary.txt"
+          done
+
+          echo "Production gate completed for Q >= $BEST_THRESHOLD."             | tee activation-results/stage3-complete.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: searchsorted-activation-${{ matrix.profile }}
+          path: activation-results/
