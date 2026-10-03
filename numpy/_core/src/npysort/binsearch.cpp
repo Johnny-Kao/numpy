@@ -131,6 +131,15 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
         if (std::strcmp(mode, "early_locality_gate") == 0) {
             return 12;
         }
+        if (std::strcmp(mode, "split_current_control") == 0) {
+            return 13;
+        }
+        if (std::strcmp(mode, "signature_then_current") == 0) {
+            return 14;
+        }
+        if (std::strcmp(mode, "early_observe_current") == 0) {
+            return 15;
+        }
         return 0;
     }();
 
@@ -655,6 +664,96 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
         }
         else {
             run_current(rest_keys, rest_rets, remaining);
+        }
+        return;
+    }
+
+    if (research_mode == 13) {
+        /*
+         * Selector-tax control: split current execution once, but make no
+         * locality decision.  Any regression versus mode 0 is split/batching
+         * cost only.
+         */
+        const npy_intp probe = env_intp(
+                "NPY_SS_EARLY_PROBE", 64, 1, 4096);
+        const npy_intp first = (probe < key_len) ? probe : key_len;
+        run_current(key, ret, first);
+        if (first < key_len) {
+            run_current(key + first * key_str,
+                        ret + first * ret_str,
+                        key_len - first);
+        }
+        return;
+    }
+
+    if (research_mode == 14) {
+        /*
+         * Selector-tax control: inspect a tiny fixed signature of query values
+         * and then execute the untouched full-batch current path.  The volatile
+         * sink prevents the compiler from deleting the observations.
+         */
+        const npy_intp observations = env_intp(
+                "NPY_SS_EARLY_OBS", 8, 2, 64);
+        volatile npy_intp signature = 0;
+        if (key_len > 1) {
+            const npy_intp checks =
+                    (observations < key_len - 1) ? observations : key_len - 1;
+            T prev = *(const T *)key;
+            for (npy_intp j = 1; j <= checks; ++j) {
+                npy_intp i = (j * (key_len - 1)) / checks;
+                if (i < 1) {
+                    i = 1;
+                }
+                const T cur = *(const T *)(key + i * key_str);
+                signature += less(cur, prev);
+                prev = cur;
+            }
+        }
+        (void)signature;
+        run_current(key, ret, key_len);
+        return;
+    }
+
+    if (research_mode == 15) {
+        /*
+         * Selector-tax control: execute a current prefix, observe its already
+         * computed insertion positions exactly as the early gate does, then
+         * always run current on the remainder.  This separates observation
+         * bookkeeping from actual misrouting.
+         */
+        const npy_intp probe = env_intp(
+                "NPY_SS_EARLY_PROBE", 64, 1, 4096);
+        const npy_intp observations = env_intp(
+                "NPY_SS_EARLY_OBS", 8, 2, 64);
+        const npy_intp first = (probe < key_len) ? probe : key_len;
+        run_current(key, ret, first);
+
+        volatile npy_intp inversions = 0;
+        if (first > 1) {
+            const npy_intp checks =
+                    (observations < first - 1) ? observations : first - 1;
+            npy_intp prev_i = 0;
+            npy_intp prev = *(npy_intp *)ret;
+            for (npy_intp j = 1; j <= checks; ++j) {
+                npy_intp i = (j * (first - 1)) / checks;
+                if (i <= prev_i) {
+                    i = prev_i + 1;
+                }
+                if (i >= first) {
+                    i = first - 1;
+                }
+                const npy_intp pos = *(npy_intp *)(ret + i * ret_str);
+                inversions += (pos < prev);
+                prev = pos;
+                prev_i = i;
+            }
+        }
+        (void)inversions;
+
+        if (first < key_len) {
+            run_current(key + first * key_str,
+                        ret + first * ret_str,
+                        key_len - first);
         }
         return;
     }
