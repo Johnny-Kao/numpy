@@ -413,17 +413,45 @@ Workflow:
 Run:
 `37112628771`
 
-Current state at record update:
+Final state:
 
-- 1 vCPU / 2 GiB: in progress
-- 2 vCPU / 4 GiB: in progress
-- 4 vCPU / 8 GiB: in progress
-- 4 vCPU / 14 GiB: in progress
-- no failure observed yet
+- 1 vCPU / 2 GiB: success
+- 2 vCPU / 4 GiB: success
+- 4 vCPU / 8 GiB: success
+- 4 vCPU / 14 GiB: success
+
+Representative results:
+
+- dense: roughly 0.16-0.19x current on strong settings, about 5-6x faster;
+- duplicates: roughly 0.13-0.15x, about 6-8x faster;
+- medium: roughly 0.38-0.47x, about 2.1-2.6x faster;
+- mostly-monotonic: strong only for some probe/observation settings, roughly 0.22-0.24x when correctly routed;
+- random: still approximately 1.13-1.22x on median-like summaries across profiles, with noisy worst cases materially higher.
+
+Baseline before/after drift medians were approximately 1.000, 1.001, 0.996 and 0.996 across the four profiles.
+
+Conclusion:
+
+> Preserving one full-batch current remainder is not enough. Splitting even a small prefix from the batch still imposes a measurable cost on random/general workloads, and the early probe can also miss or over-reject mostly-monotonic structure depending on observation placement.
+
+This rules out the current early-prefix architecture as the final production selector.
 
 ## 14. Current technical hypothesis
 
 The research has converged from a broad algorithm question to a narrow routing question.
+
+The early-gate run materially tightened the conclusion:
+
+- repeated chunking is too expensive for random workloads;
+- one-time prefix splitting is also still too expensive;
+- therefore the final selector cannot require a separate preliminary execution phase before the existing full-batch current path.
+
+The remaining viable direction is to preserve the current full-batch execution intact and obtain routing information without splitting it. This likely means either:
+
+1. piggybacking locality evidence inside the existing full-batch loop with near-zero incremental work, then applying it only to a future call/subregion where semantics permit; or
+2. finding a production-safe structural signal that is already known before execution and is strong enough to route without touching the batch shape.
+
+Any next prototype should explicitly measure selector tax in isolation before attempting another broad sweep.
 
 Established:
 
@@ -487,32 +515,27 @@ The following avenues have enough evidence to avoid repeating unless new mechani
 
 ## 17. Next decision gate
 
-When run `37112628771` completes:
+Run `37112628771` completed and random remained materially slower.
 
-### If random is near current while locality gains survive
+Therefore broad parameter sweeps remain stopped.
 
-Freeze the research architecture and create a production-shaped prototype:
-
-- remove research env knobs;
-- keep conservative typed numeric eligibility;
-- keep current as default/fallback;
-- minimize branches/state;
-- run correctness, ASV and cross-platform CI;
-- prepare PR2 narrative and benchmark table.
-
-### If random is still materially slower
-
-Do not resume broad parameter sweeps.
-
-Instead isolate the remaining cost into:
+Next work should isolate the remaining cost into:
 
 1. prefix split cost;
 2. loss of full-batch ILP from the prefix/remainder split;
-3. false-positive early routing;
+3. false-positive or false-negative early routing;
 4. dtype-specific effects;
 5. benchmark noise.
 
-Then change only the mechanism responsible for the measured cost.
+The preferred next diagnostic is a selector-tax decomposition rather than another tuning sweep:
+
+- current(full batch) baseline;
+- current(prefix) + current(remainder) with no locality decision;
+- current(full batch) plus equivalent integer-observation bookkeeping inside the loop if feasible;
+- early-gate with routing disabled;
+- early-gate with routing enabled.
+
+This should identify exactly whether the residual regression comes from split execution, bookkeeping, or misrouting before another production prototype is attempted.
 
 ## 18. Evidence index
 
