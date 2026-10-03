@@ -22,18 +22,24 @@ def key(row: dict) -> tuple:
 
 
 before_path = root / f"current-before-{suite}.json"
+mid_path = root / f"current-mid-{suite}.json"
 after_path = root / f"current-after-{suite}.json"
 before = {key(r): r for r in load(before_path)}
+mid = {key(r): r for r in load(mid_path)} if mid_path.exists() else None
 after = {key(r): r for r in load(after_path)}
+
+baseline_names = {before_path.name, after_path.name}
+if mid is not None:
+    baseline_names.add(mid_path.name)
 
 candidate_paths = sorted(
     p for p in root.glob(f"*-{suite}.json")
-    if p.name not in {before_path.name, after_path.name}
+    if p.name not in baseline_names
 )
 
 detail: list[dict] = []
 labels: list[str] = []
-for path in candidate_paths:
+for path_index, path in enumerate(candidate_paths):
     payload = json.loads(path.read_text(encoding="utf-8"))
     label = payload.get("label") or payload.get("mode") or path.stem
     labels.append(label)
@@ -41,7 +47,13 @@ for path in candidate_paths:
         k = key(row)
         b = before[k]["median_ns"]
         a = after[k]["median_ns"]
-        baseline = (b + a) / 2.0
+        m = mid[k]["median_ns"] if mid is not None else None
+        if m is None:
+            baseline = (b + a) / 2.0
+        elif path_index < len(candidate_paths) / 2:
+            baseline = (b + m) / 2.0
+        else:
+            baseline = (m + a) / 2.0
         detail.append(
             {
                 "label": label,
@@ -54,6 +66,7 @@ for path in candidate_paths:
                 "shape": row["shape"],
                 "side": row["side"],
                 "baseline_before_ns": b,
+                "baseline_mid_ns": m if m is not None else "",
                 "baseline_after_ns": a,
                 "baseline_drift_ratio": a / b,
                 "candidate_ns": row["median_ns"],
