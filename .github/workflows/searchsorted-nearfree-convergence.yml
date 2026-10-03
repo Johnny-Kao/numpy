@@ -1,6 +1,9 @@
 name: searchsorted near-free selector convergence
 
 on:
+  push:
+    branches:
+      - research/searchsorted-selector-tournament
   workflow_dispatch:
 
 permissions:
