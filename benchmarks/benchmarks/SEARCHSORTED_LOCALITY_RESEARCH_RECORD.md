@@ -581,3 +581,37 @@ After each meaningful experiment:
 7. do not rewrite history to make the path look linear.
 
 The goal is to retain enough evidence to reconstruct the reasoning later for an upstream PR, engineering retrospective, or technical article.
+
+
+## 21. Selector-tax decomposition launched
+
+After run `37112628771`, the remaining question was narrowed to selector overhead itself.
+
+New diagnostic modes were added in commit:
+`4d314d5e4250a5f5a4799bc81b58013a78c49f15`
+
+The decomposition compares:
+
+1. `current` — untouched full-batch baseline.
+2. `split_current_control` — current(prefix) + current(remainder), no locality decision.
+3. `signature_then_current` — inspect a tiny fixed set of query values, then execute one untouched full-batch current call.
+4. `early_observe_current` — current(prefix), observe already-computed insertion positions, then always current(remainder), with routing disabled.
+
+Purpose:
+
+- isolate pure split/batching cost;
+- isolate tiny pre-dispatch signature cost;
+- isolate output-observation bookkeeping cost;
+- separate those costs from actual galloping misrouting.
+
+Workflow:
+`.github/workflows/searchsorted-selector-tax-decomposition.yml`
+
+Workflow creation commit:
+`84d39443a232f9000385a288bbc4b636f63195b9`
+
+Decision rule:
+
+- if `signature_then_current` stays within roughly 1-3% of current across broad random workloads, a pre-dispatch fixed-signature selector remains viable;
+- if split controls alone reproduce the ~10-20% regression, prefix execution is conclusively ruled out;
+- if even signature-only inspection exceeds budget, hidden dynamic routing should be narrowed or abandoned in favor of a more explicit specialized path.
