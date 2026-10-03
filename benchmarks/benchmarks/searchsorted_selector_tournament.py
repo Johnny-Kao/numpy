@@ -136,8 +136,8 @@ def suite_cases() -> tuple[tuple[int, ...], tuple[int, ...], tuple[str, ...], tu
         )
     if SUITE == "adaptive_fine":
         return (
-            (1_000_000, 10_000_000, 100_000_000),
-            (1_024, 8_192, 100_000, 1_000_000),
+            (10_000_000, 100_000_000),
+            (8_192, 100_000, 1_000_000),
             ("dense", "medium", "sparse", "mostly_monotonic", "random", "block_sorted", "reversal_bursts"),
             (np.dtype("int32"),),
         )
