@@ -615,3 +615,50 @@ Decision rule:
 - if `signature_then_current` stays within roughly 1-3% of current across broad random workloads, a pre-dispatch fixed-signature selector remains viable;
 - if split controls alone reproduce the ~10-20% regression, prefix execution is conclusively ruled out;
 - if even signature-only inspection exceeds budget, hidden dynamic routing should be narrowed or abandoned in favor of a more explicit specialized path.
+
+
+## 22. Coarse-base piggyback selector prototype
+
+A new selector architecture was added in commit:
+`338f2b408b087faeac910a583af02bdceaa5560f`
+
+Hypothesis:
+
+> The first few levels of the existing full-batch binary search already compute a coarse approximation of every query's insertion position in `ret/base`. Those values can serve as a locality signature with almost no extra memory traffic.
+
+Mechanism:
+
+1. Execute the first 2-4 binary-search levels exactly as the current implementation already does.
+2. Keep the full query batch intact.
+3. Read only a tiny fixed set of already-computed `ret/base` values.
+4. Count coarse-position inversions.
+5. If the coarse signature is not strongly local, continue the existing current algorithm from the already-computed state.
+6. If the signature is strongly local, the research prototype restarts the specialized galloping path for the full batch.
+
+Important distinction:
+
+- random/general input is never prefix-split and never reruns current;
+- no separate query-value pre-scan is required;
+- selector tax on the random path is limited to a few integer reads/comparisons from state that already exists;
+- the local branch currently duplicates the first few levels because this is a mechanism screen, not yet the production local-finisher design.
+
+Research knobs:
+
+- coarse levels: 2 / 3 / 4
+- observations: 4 / 8 / 12
+- inversion allowance: 0 for the first screen
+
+Workflow:
+`.github/workflows/searchsorted-coarse-base-piggyback.yml`
+
+Workflow commit:
+`65aa2d748e80204b0b2b7cef380786533027ed01`
+
+Primary success criterion:
+
+- random/general ~ current, target <= ~3-5% regression;
+- dense/duplicates retain multi-x gains;
+- medium locality retains meaningful gains;
+- broad behavior stable across int32/int64/float64, 1D/2D, multiple Q/N and four logical resource profiles.
+
+If this mechanism succeeds, the next engineering step is not further selector tuning. It is to implement a specialized local finisher that resumes from the coarse bounds instead of restarting galloping from scratch.
