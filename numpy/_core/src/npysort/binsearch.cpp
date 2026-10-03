@@ -140,6 +140,9 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
         if (std::strcmp(mode, "early_observe_current") == 0) {
             return 15;
         }
+        if (std::strcmp(mode, "coarse_base_piggyback") == 0) {
+            return 16;
+        }
         return 0;
     }();
 
@@ -754,6 +757,114 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
             run_current(key + first * key_str,
                         ret + first * ret_str,
                         key_len - first);
+        }
+        return;
+    }
+
+    if (research_mode == 16) {
+        /*
+         * Research prototype: derive locality from coarse insertion-position
+         * information that the current batched search already computes.
+         *
+         * We execute the first few binary-search levels exactly as current
+         * does, using the same full query batch and the same ret/base storage.
+         * The only selector tax is a tiny number of integer reads/comparisons
+         * from those already-computed base values.  No query pre-scan and no
+         * prefix/remainder split is introduced.
+         */
+        const npy_intp levels = env_intp(
+                "NPY_SS_COARSE_LEVELS", 3, 1, 8);
+        const npy_intp observations = env_intp(
+                "NPY_SS_COARSE_OBS", 8, 2, 64);
+        const npy_intp max_inversions = env_intp(
+                "NPY_SS_COARSE_INV", 0, 0, 8);
+
+        if (key_len < 2 || key_str != (npy_intp)sizeof(T) ||
+                arr_str != (npy_intp)sizeof(T) ||
+                key_arr == nullptr || arr_arr == nullptr) {
+            run_current(key, ret, key_len);
+            return;
+        }
+
+        npy_intp interval_length = arr_len;
+        npy_intp half = interval_length >> 1;
+        interval_length -= half;
+
+        const T mid_val = *(const T *)(arr + half * arr_str);
+        for (npy_intp i = 0; i < key_len; ++i) {
+            const T key_val = *(const T *)(key + i * key_str);
+            *(npy_intp *)(ret + i * ret_str) = cmp(mid_val, key_val) * half;
+        }
+
+        npy_intp completed_levels = 1;
+        while (interval_length > 1 && completed_levels < levels) {
+            half = interval_length >> 1;
+            interval_length -= half;
+            for (npy_intp i = 0; i < key_len; ++i) {
+                npy_intp &base = *(npy_intp *)(ret + i * ret_str);
+                const T pivot = *(const T *)(arr + (base + half) * arr_str);
+                const T key_val = *(const T *)(key + i * key_str);
+                base += cmp(pivot, key_val) * half;
+            }
+            ++completed_levels;
+        }
+
+        const npy_intp checks =
+                (observations < key_len - 1) ? observations : key_len - 1;
+        npy_intp inversions = 0;
+        npy_intp prev_i = 0;
+        npy_intp prev = *(npy_intp *)ret;
+        for (npy_intp j = 1; j <= checks; ++j) {
+            npy_intp i = (j * (key_len - 1)) / checks;
+            if (i <= prev_i) {
+                i = prev_i + 1;
+            }
+            if (i >= key_len) {
+                i = key_len - 1;
+            }
+            const npy_intp pos = *(npy_intp *)(ret + i * ret_str);
+            if (pos < prev) {
+                ++inversions;
+                if (inversions > max_inversions) {
+                    break;
+                }
+            }
+            prev = pos;
+            prev_i = i;
+        }
+
+        if (inversions <= max_inversions) {
+            /*
+             * For this mechanism screen, restart the full batch with the
+             * specialized path.  This deliberately measures whether coarse
+             * current-state evidence is strong enough to route safely.
+             * A production version can later avoid duplicated completed work
+             * by teaching the local finisher to resume from coarse bounds.
+             */
+            run_galloping(key, ret, key_len);
+            return;
+        }
+
+        /*
+         * Continue the untouched current algorithm from the already-computed
+         * coarse base state.  Random/general inputs therefore preserve the
+         * full-batch structure of current execution.
+         */
+        while (interval_length > 1) {
+            half = interval_length >> 1;
+            interval_length -= half;
+            for (npy_intp i = 0; i < key_len; ++i) {
+                npy_intp &base = *(npy_intp *)(ret + i * ret_str);
+                const T pivot = *(const T *)(arr + (base + half) * arr_str);
+                const T key_val = *(const T *)(key + i * key_str);
+                base += cmp(pivot, key_val) * half;
+            }
+        }
+
+        for (npy_intp i = 0; i < key_len; ++i) {
+            npy_intp &base = *(npy_intp *)(ret + i * ret_str);
+            const T key_val = *(const T *)(key + i * key_str);
+            base += cmp(*(const T *)(arr + base * arr_str), key_val);
         }
         return;
     }
