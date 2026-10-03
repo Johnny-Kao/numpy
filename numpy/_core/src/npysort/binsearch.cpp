@@ -146,6 +146,9 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
         if (std::strcmp(mode, "coarse_roughness") == 0) {
             return 17;
         }
+        if (std::strcmp(mode, "coarse_decision_tree") == 0) {
+            return 18;
+        }
         return 0;
     }();
 
@@ -956,6 +959,152 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
                 (range == 0) ||
                 (total_variation <=
                  (npy_uintp)roughness_factor * range);
+
+        if (strongly_local) {
+            run_galloping(key, ret, key_len);
+            return;
+        }
+
+        while (interval_length > 1) {
+            half = interval_length >> 1;
+            interval_length -= half;
+            for (npy_intp i = 0; i < key_len; ++i) {
+                npy_intp &base = *(npy_intp *)(ret + i * ret_str);
+                const T pivot = *(const T *)(arr + (base + half) * arr_str);
+                const T key_val = *(const T *)(key + i * key_str);
+                base += cmp(pivot, key_val) * half;
+            }
+        }
+
+        for (npy_intp i = 0; i < key_len; ++i) {
+            npy_intp &base = *(npy_intp *)(ret + i * ret_str);
+            const T key_val = *(const T *)(key + i * key_str);
+            base += cmp(*(const T *)(arr + base * arr_str), key_val);
+        }
+        return;
+    }
+
+    if (research_mode == 18) {
+        /*
+         * Decision-tree screen: reuse coarse bases produced by current and
+         * evaluate several conservative structural discriminators in one
+         * compiled mode. research_policy selects the discriminator.
+         */
+        const npy_intp levels = env_intp(
+                "NPY_SS_COARSE_LEVELS", 4, 1, 8);
+        const npy_intp observations = env_intp(
+                "NPY_SS_COARSE_OBS", 16, 2, 64);
+
+        if (key_len < 2 || key_str != (npy_intp)sizeof(T) ||
+                arr_str != (npy_intp)sizeof(T) ||
+                key_arr == nullptr || arr_arr == nullptr) {
+            run_current(key, ret, key_len);
+            return;
+        }
+
+        npy_intp interval_length = arr_len;
+        npy_intp half = interval_length >> 1;
+        interval_length -= half;
+        const T mid_val = *(const T *)(arr + half * arr_str);
+
+        for (npy_intp i = 0; i < key_len; ++i) {
+            const T key_val = *(const T *)(key + i * key_str);
+            *(npy_intp *)(ret + i * ret_str) = cmp(mid_val, key_val) * half;
+        }
+
+        npy_intp completed_levels = 1;
+        while (interval_length > 1 && completed_levels < levels) {
+            half = interval_length >> 1;
+            interval_length -= half;
+            for (npy_intp i = 0; i < key_len; ++i) {
+                npy_intp &base = *(npy_intp *)(ret + i * ret_str);
+                const T pivot = *(const T *)(arr + (base + half) * arr_str);
+                const T key_val = *(const T *)(key + i * key_str);
+                base += cmp(pivot, key_val) * half;
+            }
+            ++completed_levels;
+        }
+
+        const npy_intp checks =
+                (observations < key_len - 1) ? observations : key_len - 1;
+        npy_intp prev_i = 0;
+        npy_intp prev = *(npy_intp *)ret;
+        npy_intp min_base = prev;
+        npy_intp max_base = prev;
+        npy_uintp total_variation = 0;
+        npy_intp distinct = 1;
+        npy_intp ties = 0;
+        npy_intp forward_steps = 0;
+        npy_intp backward_steps = 0;
+        npy_uintp max_step = 0;
+
+        for (npy_intp j = 1; j <= checks; ++j) {
+            npy_intp i = (j * (key_len - 1)) / checks;
+            if (i <= prev_i) {
+                i = prev_i + 1;
+            }
+            if (i >= key_len) {
+                i = key_len - 1;
+            }
+            const npy_intp pos = *(npy_intp *)(ret + i * ret_str);
+            const npy_uintp delta = (pos >= prev)
+                    ? (npy_uintp)(pos - prev)
+                    : (npy_uintp)(prev - pos);
+            total_variation += delta;
+            if (delta > max_step) {
+                max_step = delta;
+            }
+            if (pos == prev) {
+                ++ties;
+            }
+            else {
+                ++distinct;
+                if (pos > prev) {
+                    ++forward_steps;
+                }
+                else {
+                    ++backward_steps;
+                }
+            }
+            if (pos < min_base) {
+                min_base = pos;
+            }
+            if (pos > max_base) {
+                max_base = pos;
+            }
+            prev = pos;
+            prev_i = i;
+        }
+
+        const npy_uintp range = (npy_uintp)(max_base - min_base);
+        const bool strict = (total_variation == range);
+        const bool zero_range = (range == 0);
+
+        bool strongly_local = strict;
+        if (research_policy == 1) {
+            /* Require multiple observed coarse buckets unless all samples tie. */
+            strongly_local = strict && (zero_range || distinct >= 3);
+        }
+        else if (research_policy == 2) {
+            /* Require forward progress on at least one quarter of checks. */
+            strongly_local = strict &&
+                    (zero_range || forward_steps * 4 >= checks);
+        }
+        else if (research_policy == 3) {
+            /* Reject trajectories dominated by ties unless completely flat. */
+            strongly_local = strict &&
+                    (zero_range || ties * 4 <= checks * 3);
+        }
+        else if (research_policy == 4) {
+            /* Combined conservative gate. */
+            strongly_local = strict &&
+                    (zero_range ||
+                     (distinct >= 3 && forward_steps * 4 >= checks &&
+                      ties * 4 <= checks * 3));
+        }
+
+        (void)backward_steps;
+        (void)max_step;
 
         if (strongly_local) {
             run_galloping(key, ret, key_len);
