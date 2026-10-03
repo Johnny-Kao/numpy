@@ -1,9 +1,6 @@
 name: searchsorted resource-profile stress matrix
 
 on:
-  push:
-    branches:
-      - research/searchsorted-selector-tournament
   workflow_dispatch:
 
 permissions:
