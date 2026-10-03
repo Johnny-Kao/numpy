@@ -1493,3 +1493,77 @@ The selector-policy research is closed for this optimization:
 - remaining work is production shaping, correctness/CI validation, and the local finisher that resumes from existing coarse bounds.
 
 No upstream PR without contributor signoff.
+
+
+## 33. Clean PR candidate frozen
+
+Date: 2026-10-04 JST
+
+Clean branch:
+- `perf/searchsorted-locality-pr-draft`
+- production commit: `263f72551457c8f246b7e52f90cdb3a49842a85b`
+- base: upstream NumPy main `2f1eca306857b641fb0fef0ab854a2d4137e1581`
+- final diff: one commit, one source file (`numpy/_core/src/npysort/binsearch.cpp`)
+
+The temporary validation workflow and harness were removed from the final branch history.
+
+### Production behavior
+
+- Q < 2048: existing batched binary-search implementation is executed directly.
+- Q >= 2048: execute the first three existing batched levels, sample 16 already-computed coarse bases from `ret`, and detect direction reversals.
+- reversal observed: continue the existing batched binary-search path from the already-computed coarse state.
+- strong coarse locality: finish from the existing coarse bounds using the previous exact insertion position, exponential probing, and a final bounded binary search.
+
+The selector controls strategy only. Each key's coarse interval remains the correctness envelope, so classifier accuracy is not a correctness dependency.
+
+No extra query scan, heap allocation, persistent buffer, thread, cache, or sorter-path change is introduced.
+
+### Final clean validation
+
+Primary final revalidation:
+https://github.com/Johnny-Kao/numpy/actions/runs/37153156389
+
+Independent preceding clean A/B:
+https://github.com/Johnny-Kao/numpy/actions/runs/37152299188
+
+Final run:
+- 4/4 jobs success
+- Base and PR correctness fingerprints identical on all four jobs
+- same-runner forward/reverse Base/PR measurement
+- int32 / int64 / float64
+- N = 1M / 10M
+- Q = 1024 / 2048 / 4096 / 8192 / 100000
+- left / right
+- random / dense / medium / mostly-monotonic / duplicates
+
+For active local cases (Q >= 2048):
+- dense: median PR/Base 0.281x (~3.56x speedup), 192/192 faster
+- medium: 0.447x (~2.24x), 168/168 faster
+- mostly-monotonic: 0.299x (~3.34x), 192/192 faster
+- duplicates: 0.235x (~4.25x), 192/192 faster
+- combined: 0.285x (~3.51x), 744/744 faster
+
+For random Q=2048/4096/8192:
+- median PR/Base 0.991x
+- p95 1.010x
+- worst 1.029x across 144 comparisons
+- interpret as near-current / within measurement noise, not as a claimed random-workload speedup
+
+Q=100000 random showed a noisy tail on one constrained hosted runner while the other jobs remained near current; do not use that tail as either positive or negative performance evidence without a tighter interleaved harness.
+
+### Portable threshold note
+
+Activation run:
+https://github.com/Johnny-Kao/numpy/actions/runs/37147552873
+
+Observed hardware crossover differed:
+- AMD EPYC 9V74 / 7763 accepted substantially lower activation thresholds in the tested matrix.
+- Intel Xeon Platinum 8573C required a higher threshold; Q=1024 was close but missed the conservative p95 gate.
+
+Therefore Q>=2048 is frozen as the initial portable default, not a globally optimal constant. Future work may lower or replace it with an architecture-neutral cheap signal. Do not add CPU-model-specific tuning to the initial PR.
+
+### PR status
+
+Research is closed. Clean production candidate and maintainer-facing draft are ready for review.
+
+Do not open the upstream PR without explicit user signoff.
