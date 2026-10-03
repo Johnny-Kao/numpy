@@ -991,3 +991,73 @@ The goal is a conservative precision gate:
 > if evidence is not strongly local, stay on current.
 
 No upstream PR should be prepared until the false-positive tail mechanism is understood and bounded.
+
+
+## 27. Experiment-tree batching rule for the next false-positive study
+
+The next phase will not use another serial “run -> inspect -> design one more run” loop.
+
+Because CI provisioning/build/benchmark cost is now material, the next experiment must be designed as a **precomputed decision tree** and collect evidence for the likely follow-up branches in one runner allocation whenever the measurements do not perturb each other.
+
+### Primary question
+
+Why do some random workloads still satisfy the strict coarse no-backtracking test and route incorrectly?
+
+### Evidence to collect in one pass for every sampled random/local case
+
+Using only coarse `ret/base` state already produced by current:
+
+- sampled base sequence;
+- number of distinct coarse buckets;
+- zero-step / tie count and fraction;
+- min/max/range;
+- total variation;
+- forward-step count;
+- backward-step count;
+- maximum single step;
+- span occupancy / reachable-bucket occupancy;
+- concentration of samples per bucket;
+- minimum observed forward progress;
+- routing result under the current strict roughness rule.
+
+The same instrumentation should be applied to:
+- false-positive random cases;
+- correctly rejected random cases;
+- dense/local positives;
+- medium-locality positives;
+- mostly-monotonic positives.
+
+### Precomputed decision tree
+
+```
+A. Are false positives dominated by high tie / low-distinct-bucket trajectories?
+   YES -> test tie/distinct-bucket gate in the same data.
+   NO  -> B
+
+B. Are false positives distinguishable by low span occupancy / low forward progress?
+   YES -> test minimum-progress / occupancy gate in the same data.
+   NO  -> C
+
+C. Are they distinguishable by bucket concentration / entropy-like concentration?
+   YES -> test concentration gate in the same data.
+   NO  -> D
+
+D. Do false positives remain statistically indistinguishable from true local cases at coarse levels 3/4?
+   YES -> coarse-state-only selector is insufficient at this resolution; narrow scope or use one additional structural signal.
+   NO  -> select the cheapest discriminator with highest false-positive rejection and lowest local false-negative rate.
+```
+
+### Validation layout
+
+Once the discriminator candidates are computed from the diagnostic data, the same CI allocation should, where practical, evaluate all cheap candidate gates against the broad workload matrix instead of launching one workflow per candidate.
+
+Rules:
+
+- preserve same-machine current baselines;
+- keep factor=1 fixed;
+- do not resume broad levels/observation sweeps;
+- prefer a small set of orthogonal candidate gates over threshold grids;
+- record both median and tail behavior;
+- only launch a later run if the prior evidence exposes a genuinely new unknown that could not reasonably have been anticipated.
+
+This is now the active experimental-design rule for the searchsorted investigation.
