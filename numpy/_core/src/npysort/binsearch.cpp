@@ -65,6 +65,7 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
 {
     using T = typename Tag::type;
     auto cmp = side_to_cmp<Tag, side>::value;
+    auto less = Tag::less;
 
     // If the array length is 0 we return all 0s
     if (arr_len <= 0) {
@@ -75,101 +76,223 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
     }
 
     /*
-    In this binary search implementation, the candidate insertion indices for
-    the j-th key are in the range [base_j, base_j+length] and on each
-    iteration we pick a pivot at the mid-point of the range to compare against
-    the j-th key. Depending on the comparison result, we adjust the base_j and
-    halve the length of the interval.
+     * Small batches retain the current batched binary-search path unchanged.
+     * For larger batches, the first few batched levels already produce a
+     * coarse insertion-position trajectory in ret.  A tiny fixed sample of
+     * that state is enough to identify strong locality without scanning the
+     * query values or allocating additional storage.
+     */
+    /*
+     * Keep the initial activation point conservative across CPUs. The
+     * crossover was lower on the tested AMD runners than on Intel, so this is
+     * a portable default rather than a claim that 2048 is globally optimal.
+     */
+    constexpr npy_intp locality_min_keys = 2048;
+    constexpr npy_intp locality_samples = 16;
+    constexpr npy_intp locality_levels = 3;
 
-    To batch multiple queries, we process all bases with a fixed length. The
-    length is halved on each iteration of an outer loop and all bases are
-    updated in an inner loop. To avoid consuming extra memory, we use the
-    result array to store intermediate values of each base until they become
-    the final result in the last step.
+    if (key_len < locality_min_keys) {
+        npy_intp interval_length = arr_len;
+        npy_intp half = interval_length >> 1;
+        interval_length -= half; // length -> ceil(length / 2)
 
-    There are two benefits of this approach:
+        const T mid_val = *(const T *)(arr + half * arr_str);
 
-    1. Cache locallity of pivots. In early iterations each key is compared
-    against the same set of pivots. For example, in the first iteration all
-    keys are compared against the median. In the second iteration, all keys
-    end up being compared against 1st and 3rd quartiles.
+        for (npy_intp i = 0; i < key_len; ++i) {
+            const T key_val = *(const T *)(key + i * key_str);
+            *(npy_intp *)(ret + i * ret_str) = cmp(mid_val, key_val) * half;
+        }
 
-    2. Independent calculations for out-of-order execution. In the single-key
-    version, step i+1 depends on computation of step i. Meaning that step i+1
-    must wait for step i to complete before proceeding. When batching multiple
-    keys, we compute each step for all keys before continuing on the next
-    step. All the computations at a given step are independent across
-    different keys. Meaning that the CPU can execute multiple keys
-    out-of-order in parallel.
+        while (interval_length > 1) {
+            half = interval_length >> 1;
+            interval_length -= half; // length -> ceil(length / 2)
 
-    Invariant (for every j):
-    - cmp(arr[i], key_val_j) == true  for all i < base_j
-    - cmp(arr[i], key_val_j) == false for all i >= base_j + length
+            for (npy_intp i = 0; i < key_len; ++i) {
+                npy_intp &base = *(npy_intp *)(ret + i * ret_str);
+                const T pivot = *(const T *)(arr + (base + half) * arr_str);
+                const T key_val = *(const T *)(key + i * key_str);
+                base += cmp(pivot, key_val) * half;
+            }
+        }
 
-    where cmp(a, b) operator depends on side input:
-    - For side = "left", cmp operator is <
-    - For side = "right", cmp operator is <=
+        for (npy_intp i = 0; i < key_len; ++i) {
+            npy_intp &base = *(npy_intp *)(ret + i * ret_str);
+            const T key_val = *(const T *)(key + i * key_str);
+            base += cmp(*(const T *)(arr + base * arr_str), key_val);
+        }
+        return;
+    }
 
-    The insertion index candidates are in range [base, base+length] and
-    on each iteration we shrink the range into either
-        [base, ceil(length / 2)]
-    or
-        [base + floor(length / 2), ceil(length / 2)]
-
-    The outer loop terminates when length = 1. At that point, for each j
-    the insertion order is either base_j or base_j + 1. An additional
-    comparison is required to determine which of the two values.
-    If cmp(arr[base_j], key_val_j) == true, insertion index is base_j + 1.
-    Otherwise the insertion order is base_j.
-
-    Optimization: we unroll the first iteration for the following reasons:
-        1. ret is not initialized with the bases, so we save |keys| writes
-        by not having to initialize it with 0s.
-        2. By assuming the initial base for every key is 0, we also save
-        |keys| reads.
-        3. In the first iteration, all elements are compared against the
-        median. So we can store it in a variable and use it for all keys.
-
-    This initial block replaces the initialization loop that is used for the
-    arr_len==0 case. Note that when arr_len = 1, then half is 0 so the
-    following block initializes the array as with 0s.
-    */
     npy_intp interval_length = arr_len;
     npy_intp half = interval_length >> 1;
     interval_length -= half; // length -> ceil(length / 2)
 
-    npy_intp base = 0;
-    const T mid_val = *(const T *)(arr + (base + half) * arr_str);
+    const T mid_val = *(const T *)(arr + half * arr_str);
 
     for (npy_intp i = 0; i < key_len; ++i) {
         const T key_val = *(const T *)(key + i * key_str);
         *(npy_intp *)(ret + i * ret_str) = cmp(mid_val, key_val) * half;
     }
 
-    while (interval_length > 1) {
-        npy_intp half = interval_length >> 1;
+    npy_intp completed_levels = 1;
+    while (interval_length > 1 &&
+           completed_levels < locality_levels) {
+        half = interval_length >> 1;
         interval_length -= half; // length -> ceil(length / 2)
 
         for (npy_intp i = 0; i < key_len; ++i) {
             npy_intp &base = *(npy_intp *)(ret + i * ret_str);
-            const T mid_val = *(const T *)(arr + (base + half) * arr_str);
+            const T pivot = *(const T *)(arr + (base + half) * arr_str);
             const T key_val = *(const T *)(key + i * key_str);
-            base += cmp(mid_val, key_val) * half;
+            base += cmp(pivot, key_val) * half;
+        }
+        ++completed_levels;
+    }
+
+    bool use_local_finish = false;
+    if (interval_length > 1) {
+        const npy_intp last = key_len - 1;
+        npy_intp prev = *(npy_intp *)ret;
+        int direction = 0;
+        use_local_finish = true;
+
+        for (npy_intp j = 1; j <= locality_samples; ++j) {
+            const npy_intp i = (j * last) >> 4;
+            const npy_intp pos = *(npy_intp *)(ret + i * ret_str);
+
+            if (pos > prev) {
+                if (direction < 0) {
+                    use_local_finish = false;
+                    break;
+                }
+                direction = 1;
+            }
+            else if (pos < prev) {
+                if (direction > 0) {
+                    use_local_finish = false;
+                    break;
+                }
+                direction = -1;
+            }
+            prev = pos;
         }
     }
 
-    /*
-    At this point interval_length == 1, so the candidates are in the 
-    interval [base, base + 1].
+    if (!use_local_finish) {
+        while (interval_length > 1) {
+            half = interval_length >> 1;
+            interval_length -= half; // length -> ceil(length / 2)
 
-    We have two options:
-        If cmp(arr[base], key_val) == true, insertion index is base + 1
-        Otherwise the insertion order is just base
-    */
+            for (npy_intp i = 0; i < key_len; ++i) {
+                npy_intp &base = *(npy_intp *)(ret + i * ret_str);
+                const T pivot = *(const T *)(arr + (base + half) * arr_str);
+                const T key_val = *(const T *)(key + i * key_str);
+                base += cmp(pivot, key_val) * half;
+            }
+        }
+
+        for (npy_intp i = 0; i < key_len; ++i) {
+            npy_intp &base = *(npy_intp *)(ret + i * ret_str);
+            const T key_val = *(const T *)(key + i * key_str);
+            base += cmp(*(const T *)(arr + base * arr_str), key_val);
+        }
+        return;
+    }
+
+    /*
+     * Finish from the already-computed coarse bounds.  The previous exact
+     * insertion position is a valid lower bound for nondecreasing keys and a
+     * valid upper bound for decreasing keys.  Exponential probing narrows that
+     * bound before the final binary search.  The per-key coarse interval
+     * remains the correctness envelope even when local order briefly changes.
+     */
+    T previous_key = *(const T *)key;
+    npy_intp previous_pos = 0;
+
     for (npy_intp i = 0; i < key_len; ++i) {
-        npy_intp &base = *(npy_intp *)(ret + i * ret_str);
         const T key_val = *(const T *)(key + i * key_str);
-        base += cmp(*(const T *)(arr + base * arr_str), key_val);
+        const npy_intp coarse_base = *(npy_intp *)(ret + i * ret_str);
+        npy_intp min_idx = coarse_base;
+        npy_intp max_idx = coarse_base + interval_length;
+        if (max_idx > arr_len) {
+            max_idx = arr_len;
+        }
+
+        if (i > 0) {
+            if (!less(key_val, previous_key)) {
+                if (previous_pos > min_idx) {
+                    min_idx = previous_pos;
+                }
+                if (min_idx < max_idx &&
+                    cmp(*(const T *)(arr + min_idx * arr_str), key_val)) {
+                    const npy_intp origin = min_idx;
+                    npy_intp step = 1;
+                    min_idx = origin + 1;
+
+                    while (origin + step < max_idx) {
+                        const npy_intp probe = origin + step;
+                        if (!cmp(*(const T *)(arr + probe * arr_str),
+                                 key_val)) {
+                            max_idx = probe + 1;
+                            break;
+                        }
+                        min_idx = probe + 1;
+                        const npy_intp remaining = max_idx - 1 - origin;
+                        if (step > (remaining >> 1)) {
+                            break;
+                        }
+                        step <<= 1;
+                    }
+                }
+                else if (min_idx < max_idx) {
+                    max_idx = min_idx + 1;
+                }
+            }
+            else {
+                if (previous_pos < max_idx) {
+                    max_idx = previous_pos;
+                }
+
+                if (min_idx < max_idx) {
+                    const npy_intp origin = max_idx;
+                    npy_intp step = 1;
+
+                    while (origin > min_idx) {
+                        const npy_intp distance = origin - min_idx;
+                        const npy_intp probe =
+                                (step >= distance) ? min_idx : origin - step;
+
+                        if (cmp(*(const T *)(arr + probe * arr_str),
+                                key_val)) {
+                            min_idx = probe + 1;
+                            break;
+                        }
+
+                        max_idx = probe;
+                        if (probe == min_idx || step > (distance >> 1)) {
+                            break;
+                        }
+                        step <<= 1;
+                    }
+                }
+            }
+        }
+
+        while (min_idx < max_idx) {
+            const npy_intp mid_idx =
+                    min_idx + ((max_idx - min_idx) >> 1);
+            const T pivot = *(const T *)(arr + mid_idx * arr_str);
+            if (cmp(pivot, key_val)) {
+                min_idx = mid_idx + 1;
+            }
+            else {
+                max_idx = mid_idx;
+            }
+        }
+
+        *(npy_intp *)(ret + i * ret_str) = min_idx;
+        previous_pos = min_idx;
+        previous_key = key_val;
     }
 }
 
