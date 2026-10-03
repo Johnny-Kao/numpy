@@ -105,7 +105,7 @@ jobs:
             local suite="$3"
             (
               ulimit -v "$PROFILE_MEM_KB"
-              taskset -c "$CPULIST" env                 SEARCHSORTED_TOURNAMENT_SUITE="$suite"                 SEARCHSORTED_TOURNAMENT_OUT="signoff-results/$label-$suite.json"                 NPY_SEARCHSORTED_RESEARCH_LABEL="$label"                 "$py" "$RUNNER_TEMP/bench.py"
+              taskset -c "$CPULIST" env                 SEARCHSORTED_TOURNAMENT_SUITE="$suite"                 SEARCHSORTED_TOURNAMENT_OUT="signoff-results/$label-$suite.json"                 NPY_SEARCHSORTED_RESEARCH_LABEL="$label"                 NPY_SEARCHSORTED_RESEARCH_MODE=current                 "$py" "$RUNNER_TEMP/bench.py"
             )
           }
 
