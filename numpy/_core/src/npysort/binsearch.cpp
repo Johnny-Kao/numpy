@@ -128,6 +128,9 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
         if (std::strcmp(mode, "online_locality") == 0) {
             return 11;
         }
+        if (std::strcmp(mode, "early_locality_gate") == 0) {
+            return 12;
+        }
         return 0;
     }();
 
@@ -584,6 +587,74 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
              * immediately returns execution to the current batched path.
              */
             use_local = observed_locality(block_rets, count);
+        }
+        return;
+    }
+
+    if (research_mode == 12) {
+        /*
+         * Research prototype: preserve the existing full-batch current path
+         * unless a tiny prefix already demonstrates strong locality.
+         *
+         * Only the prefix is split.  Random inputs therefore pay one small
+         * prefix plus one full remainder batch instead of repeated chunking.
+         * Local inputs can switch the whole remainder to galloping.
+         */
+        const npy_intp probe = env_intp(
+                "NPY_SS_EARLY_PROBE", 128, 16, 4096);
+        const npy_intp observations = env_intp(
+                "NPY_SS_EARLY_OBS", 8, 2, 64);
+        const npy_intp max_inversions = env_intp(
+                "NPY_SS_EARLY_INV", 0, 0, 8);
+
+        if (key_len < probe * 2 || key_str != (npy_intp)sizeof(T) ||
+                arr_str != (npy_intp)sizeof(T) ||
+                key_arr == nullptr || arr_arr == nullptr) {
+            run_current(key, ret, key_len);
+            return;
+        }
+
+        const npy_intp first = (probe < key_len) ? probe : key_len;
+        run_current(key, ret, first);
+
+        const npy_intp checks =
+                (observations < first - 1) ? observations : first - 1;
+        npy_intp inversions = 0;
+        npy_intp prev_i = 0;
+        npy_intp prev = *(npy_intp *)ret;
+
+        for (npy_intp j = 1; j <= checks; ++j) {
+            npy_intp i = (j * (first - 1)) / checks;
+            if (i <= prev_i) {
+                i = prev_i + 1;
+            }
+            if (i >= first) {
+                i = first - 1;
+            }
+            const npy_intp pos = *(npy_intp *)(ret + i * ret_str);
+            if (pos < prev) {
+                ++inversions;
+                if (inversions > max_inversions) {
+                    break;
+                }
+            }
+            prev = pos;
+            prev_i = i;
+        }
+
+        const npy_intp remaining = key_len - first;
+        if (remaining == 0) {
+            return;
+        }
+
+        const char *rest_keys = key + first * key_str;
+        char *rest_rets = ret + first * ret_str;
+
+        if (inversions <= max_inversions) {
+            run_galloping(rest_keys, rest_rets, remaining);
+        }
+        else {
+            run_current(rest_keys, rest_rets, remaining);
         }
         return;
     }
