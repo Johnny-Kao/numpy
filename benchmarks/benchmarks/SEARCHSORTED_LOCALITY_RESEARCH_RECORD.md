@@ -1244,3 +1244,134 @@ Do not restart:
 - blind parameter tuning.
 
 The research question is now narrow: **can a near-zero-cost structural discriminator from existing coarse binary-search state eliminate the remaining random false positives?**
+
+
+## 30. Decision-tree convergence result — run 37133052228
+
+Date: 2026-10-04 JST
+
+Run `37133052228` completed successfully on all four logical resource profiles:
+- micro-1vcpu-2gb
+- small-2vcpu-4gb
+- standard-4vcpu-8gb
+- standard-4vcpu-14gb
+
+The workflow evaluated levels 3/4, observations 16/32, policies p0-p4, same-machine before/mid/after baselines, coarse-signature diagnostics, and the broad timing matrix in one runner allocation.
+
+### Critical correction: timing tail is not evidence of false-positive routing
+
+The diagnostic corpus contains 72 random cases for each levels/observations setting.
+
+For every tested configuration:
+- p0 strict roughness: random routes = **0/72**
+- p1 strict + distinct buckets: **0/72**
+- p2 strict + forward progress: **0/72**
+- p3 strict + tie guard: **0/72**
+- p4 combined conservative gate: **0/72**
+
+Therefore no exact random false-positive case exists in this completed convergence run.
+
+This changes the interpretation of the earlier random tails:
+
+> A random timing regression cannot be labeled a routing false positive unless routing diagnostics prove that the case entered the local path.
+
+In this run, random inputs were correctly rejected by the selector, yet random timing still regressed. The remaining problem is therefore selector/hot-path tax plus measurement noise, not insufficient structural discrimination.
+
+### Policy comparison
+
+Diagnostic true-local routing for dense / medium / mostly-monotonic / duplicates:
+
+- p0: 276/276 = 100% at all tested levels/observations.
+- p1:
+  - l3: 228/276 = 82.6%
+  - l4: 264/276 = 95.7%
+- p2/p3/p4:
+  - 228/276 = 82.6% across the tested settings.
+
+Because random routing is already 0/72 for p0, the additional p1-p4 structural guards do not improve random classification in this corpus. They only reject useful local cases.
+
+Decision:
+- **p1 rejected**
+- **p2 rejected**
+- **p3 rejected**
+- **p4 rejected**
+- **p0 strict roughness retained only as the minimal research mechanism baseline**
+
+### Timing evidence
+
+Cross-profile random timing, selected configurations:
+
+- l3/o32/p0:
+  - median ratio ~1.052x
+  - p95 ~1.089x
+  - worst ~1.247x
+  - ~50.7% of random cases exceed +5%
+- l3/o32/p1:
+  - median ~1.054x
+  - p95 ~1.105x
+  - worst ~1.203x
+- l4/o32/p4:
+  - median ~1.043x
+  - p95 ~1.086x
+  - worst ~1.287x
+  - ~44.1% of random cases exceed +5%
+
+No tested policy reliably keeps rejected-random execution within the desired ~<=5% budget across profiles.
+
+Locality remains strong. For l3/o32/p0, across dense / medium / mostly-monotonic / duplicates:
+- median ratio ~0.319x
+- worst ~0.742x in the aggregated broad matrix
+- diagnostics route all 276/276 target-local cases.
+
+The more conservative policies sacrifice local routing without producing a corresponding random-path benefit.
+
+### False-positive mechanism result
+
+Exact mechanism result:
+
+> **No false-positive mechanism was found because no random false positive occurred in the diagnostic matrix.**
+
+The previous hypothesis that rare random timing tails were caused by sampled coarse trajectories accidentally satisfying strict roughness is not supported by this run and should not remain the working explanation.
+
+The structural resolution is sufficient to reject the current synthetic random corpus. The unresolved issue is the cost of observing/evaluating the selector inside the existing batched search even when the selector ultimately falls back to current.
+
+### Architecture freeze decision
+
+Production selector architecture is **not frozen**.
+
+Reason:
+- classification is now sufficiently conservative on the tested random corpus;
+- but rejected-random execution still carries material overhead/tails;
+- therefore the remaining gate is implementation cost, not another classification threshold.
+
+Do not add p5/p6 or restart observations/threshold sweeps without new mechanism evidence.
+
+### Current hypothesis
+
+The remaining random regression is produced by one or more of:
+1. bookkeeping needed to collect sampled coarse-base state;
+2. branches/guards in the hot binary-search loop;
+3. loss of compiler/ILP/vectorization quality from the research instrumentation;
+4. fixed selector setup cost, especially visible in smaller Q;
+5. benchmark drift/noise in the largest tail cases.
+
+Large worst-tail observations correlate with substantial before/after baseline drift in several cases, so worst values must not be interpreted as pure selector cost. Median/p95 evidence still shows a real residual tax.
+
+### Next decision gate
+
+The next experiment is no longer a selector-classification tournament.
+
+It must isolate **rejected-random selector tax** using the same full-batch architecture:
+
+1. current baseline;
+2. current + equivalent coarse-state bookkeeping but no routing decision;
+3. current + strict-roughness decision forced to remain on current;
+4. current + production-shaped p0 routing;
+5. compare generated code / branch structure if needed.
+
+Goal:
+- prove where the ~4-6% median random tax originates;
+- remove that tax without weakening the 0/72 random rejection result;
+- only then decide whether p0 can become the frozen production selector.
+
+No upstream PR without contributor signoff.
