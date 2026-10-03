@@ -1375,3 +1375,76 @@ Goal:
 - only then decide whether p0 can become the frozen production selector.
 
 No upstream PR without contributor signoff.
+
+
+## 31. Near-free P0 implementation convergence — active experiment
+
+Date: 2026-10-04 JST
+
+Objective:
+
+> Keep the validated strict P0 classification mechanism, but reduce correctly-rejected random/general selector tax toward measurement noise by reusing already-produced coarse current-search state.
+
+This experiment is intentionally not another selector-policy sweep. It is an implementation-cost tournament.
+
+### Three-layer single-allocation decision tree
+
+**Layer 1 — cheap mechanism/cost screen**
+
+Nine foreseeable P0 implementations are tested in one runner allocation:
+
+- A16: original total-variation/range P0, 16 observations
+- A32: original total-variation/range P0, 32 observations
+- B16E: direction/reversal equivalence, 16 observations, early abort
+- B32E: direction/reversal equivalence, 32 observations, early abort
+- B16FULL: reversal detector without early abort, isolating early-abort value
+- C16: fixed 16-way shift-based sampling + reversal early abort
+- C32: fixed 32-way shift-based sampling + reversal early abort
+- C16-Q2K: C16 plus free metadata activation gate at Q>=2048
+- C16-Q8K: C16 plus free metadata activation gate at Q>=8192
+
+All candidates:
+- reuse coarse bases produced by the first three current binary-search levels;
+- do not pre-scan query values;
+- do not split the batch;
+- correctly rejected random/general continues current from already-computed bounds.
+
+**Layer 2 — broad finalist validation**
+
+Layer 1 automatically selects at most three useful finalists. Only those candidates run the full `online_broad` dtype/layout/N/Q/distribution matrix.
+
+Proceed threshold:
+- random median <= 1.05x current;
+- random p95 <= 1.10x;
+- local median <= 0.75x.
+
+If none pass, the workflow stops and records the mechanism-cost conclusion.
+
+**Layer 3 — production gate**
+
+At most two passing finalists continue to:
+- `adaptive_stress` for large N/Q;
+- `tiny` for tiny-Q behavior.
+
+No new GitHub Actions allocation is needed between stages.
+
+### Implementation assets
+
+- near-free research mode commit: `d73985adfbcf9ce37802c5724c3976f1ec47887f`
+- staged benchmark suites: `0a5b5e89cd482bcb1064180c26cbaec33fd74259`, `08f1064c30fda88279cbd9f1e1e65af415b4480f`
+- staged analyzer: `ea8771a9bdf3fccfd96c77b6ff3b557b442b7db4`
+- workflow creation: `e323775f1d5ad13a5885e1d24170e252522919ec`
+- push-trigger commit: `27a0edf7a16fa7f799d90086b37d3b483b2a959e`
+- workflow: `.github/workflows/searchsorted-nearfree-convergence.yml`
+
+### Next decision
+
+Do not add P5/P6 classification policies.
+
+The next conclusion must come from this implementation tournament:
+1. identify whether TV/range arithmetic, early-abort behavior, sample-index arithmetic, or metadata gating dominates residual selector tax;
+2. select the lowest-cost mechanism that preserves locality gain;
+3. stop if the production tax remains outside the acceptable envelope;
+4. if the tax reaches near-current behavior, freeze the selector implementation and move to the production-shaped local finisher that resumes from existing coarse bounds.
+
+No upstream PR without contributor signoff.
