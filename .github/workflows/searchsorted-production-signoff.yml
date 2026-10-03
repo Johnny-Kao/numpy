@@ -1,0 +1,166 @@
+name: searchsorted production signoff
+
+on:
+  push:
+    branches:
+      - research/searchsorted-selector-tournament
+    paths:
+      - .github/workflows/searchsorted-production-signoff.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: searchsorted-production-signoff-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  signoff:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: micro-1vcpu-2gb
+            cpus: 1
+            mem_kb: 2097152
+          - profile: small-2vcpu-4gb
+            cpus: 2
+            mem_kb: 4194304
+          - profile: standard-4vcpu-8gb
+            cpus: 4
+            mem_kb: 8388608
+          - profile: standard-4vcpu-14gb
+            cpus: 4
+            mem_kb: 14680064
+
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PROFILE_NAME: ${{ matrix.profile }}
+      PROFILE_CPUS: ${{ matrix.cpus }}
+      PROFILE_MEM_KB: ${{ matrix.mem_kb }}
+      BASE_SHA: 2f1eca306857b641fb0fef0ab854a2d4137e1581
+      CANDIDATE_REF: perf/searchsorted-locality-selector
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          ref: research/searchsorted-selector-tournament
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Record runner metadata
+        run: |
+          mkdir -p signoff-results
+          {
+            echo "profile=$PROFILE_NAME"
+            echo "logical_cpus=$PROFILE_CPUS"
+            echo "logical_mem_kb=$PROFILE_MEM_KB"
+            echo "host_cpu=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | xargs)"
+            echo "host_nproc=$(nproc)"
+            echo "host_mem_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')"
+          } | tee signoff-results/runner-metadata.txt
+
+      - name: Preserve benchmark harness
+        run: |
+          cp benchmarks/benchmarks/searchsorted_selector_tournament.py "$RUNNER_TEMP/bench.py"
+
+      - name: Build base and candidate wheels
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          git fetch origin "$CANDIDATE_REF"
+          mkdir -p "$RUNNER_TEMP/base-wheels" "$RUNNER_TEMP/candidate-wheels"
+
+          git checkout --detach "$BASE_SHA"
+          git submodule update --init --recursive
+          python -m pip wheel . -w "$RUNNER_TEMP/base-wheels"
+
+          git checkout "$CANDIDATE_REF"
+          git submodule update --init --recursive
+          python -m pip wheel . -w "$RUNNER_TEMP/candidate-wheels"
+
+      - name: Create isolated environments
+        run: |
+          python -m venv "$RUNNER_TEMP/base"
+          python -m venv "$RUNNER_TEMP/candidate"
+          "$RUNNER_TEMP/base/bin/pip" install "$RUNNER_TEMP"/base-wheels/numpy-*.whl
+          "$RUNNER_TEMP/candidate/bin/pip" install "$RUNNER_TEMP"/candidate-wheels/numpy-*.whl
+
+      - name: Run correctness and performance signoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          CPULIST="0-$((PROFILE_CPUS-1))"
+
+          run_suite () {
+            local py="$1"
+            local label="$2"
+            local suite="$3"
+            (
+              ulimit -v "$PROFILE_MEM_KB"
+              taskset -c "$CPULIST" env                 SEARCHSORTED_TOURNAMENT_SUITE="$suite"                 SEARCHSORTED_TOURNAMENT_OUT="signoff-results/$label-$suite.json"                 NPY_SEARCHSORTED_RESEARCH_LABEL="$label"                 "$py" "$RUNNER_TEMP/bench.py"
+            )
+          }
+
+          for suite in online_broad adaptive_stress tiny; do
+            run_suite "$RUNNER_TEMP/base/bin/python" "base-before" "$suite"
+            run_suite "$RUNNER_TEMP/candidate/bin/python" "candidate" "$suite"
+            run_suite "$RUNNER_TEMP/base/bin/python" "base-after" "$suite"
+          done
+
+      - name: Analyze signoff
+        run: |
+          "$RUNNER_TEMP/candidate/bin/python" - <<'PY'
+          import json, statistics
+          from pathlib import Path
+
+          root=Path("signoff-results")
+          suites=("online_broad","adaptive_stress","tiny")
+          keys=("dtype","n","q","shape","layout","side")
+          local={"dense","medium","mostly_monotonic","duplicates"}
+
+          out={}
+          for suite in suites:
+              def rows(label):
+                  return json.loads((root/f"{label}-{suite}.json").read_text())["rows"]
+              b1={tuple(r[k] for k in keys):r["median_ns"] for r in rows("base-before")}
+              b2={tuple(r[k] for k in keys):r["median_ns"] for r in rows("base-after")}
+              base={k:statistics.median((b1[k],b2[k])) for k in b1.keys() & b2.keys()}
+              ratios=[]; rnd=[]; loc=[]; below=[]
+              for r in rows("candidate"):
+                  k=tuple(r[x] for x in keys)
+                  if k not in base: continue
+                  x=r["median_ns"]/base[k]
+                  ratios.append(x)
+                  if r["shape"]=="random": rnd.append(x)
+                  if r["shape"] in local: loc.append(x)
+                  if int(r["q"]) < 2048: below.append(x)
+              def p95(xs):
+                  ys=sorted(xs)
+                  return ys[min(len(ys)-1, round((len(ys)-1)*.95))] if ys else None
+              out[suite]={
+                  "cases":len(ratios),
+                  "overall_median":statistics.median(ratios),
+                  "random_median":statistics.median(rnd) if rnd else None,
+                  "random_p95":p95(rnd),
+                  "random_worst":max(rnd) if rnd else None,
+                  "local_median":statistics.median(loc) if loc else None,
+                  "local_p95":p95(loc),
+                  "below_gate_median":statistics.median(below) if below else None,
+              }
+          (root/"summary.json").write_text(json.dumps(out,indent=2))
+          print(json.dumps(out,indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: searchsorted-production-signoff-${{ matrix.profile }}
+          path: signoff-results/
