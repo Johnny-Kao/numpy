@@ -149,6 +149,9 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
         if (std::strcmp(mode, "coarse_decision_tree") == 0) {
             return 18;
         }
+        if (std::strcmp(mode, "coarse_p0_nearfree") == 0) {
+            return 19;
+        }
         return 0;
     }();
 
@@ -1129,6 +1132,171 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
         }
         return;
     }
+
+
+    if (research_mode == 19) {
+        /*
+         * Near-free P0 implementation tournament.
+         *
+         * policy 0: A  - TV==range, evenly spaced observations
+         * policy 1: B1 - reversal detector, early abort, evenly spaced
+         * policy 2: B2 - reversal detector, full scan, evenly spaced
+         * policy 3: C1 - reversal detector, early abort, fixed 16-way sampling
+         * policy 4: C2 - reversal detector, early abort, fixed 32-way sampling
+         * policy 5: C3 - C1 + free metadata activation gate Q>=2048
+         * policy 6: C4 - C1 + free metadata activation gate Q>=8192
+         *
+         * All candidates reuse coarse bases already produced by the first
+         * three current-search levels.  Random/general fallback continues from
+         * those bases without restarting the current algorithm.
+         */
+        const npy_intp observations = env_intp(
+                "NPY_SS_COARSE_OBS", 16, 2, 64);
+        npy_intp activate_q = 0;
+        if (research_policy == 5) {
+            activate_q = 2048;
+        }
+        else if (research_policy == 6) {
+            activate_q = 8192;
+        }
+
+        if ((activate_q && key_len < activate_q) ||
+                key_len < 2 || key_str != (npy_intp)sizeof(T) ||
+                arr_str != (npy_intp)sizeof(T) ||
+                key_arr == nullptr || arr_arr == nullptr) {
+            run_current(key, ret, key_len);
+            return;
+        }
+
+        npy_intp interval_length = arr_len;
+        npy_intp half = interval_length >> 1;
+        interval_length -= half;
+
+        const T mid_val = *(const T *)(arr + half * arr_str);
+        for (npy_intp i = 0; i < key_len; ++i) {
+            const T key_val = *(const T *)(key + i * key_str);
+            *(npy_intp *)(ret + i * ret_str) = cmp(mid_val, key_val) * half;
+        }
+
+        npy_intp completed_levels = 1;
+        while (interval_length > 1 && completed_levels < 3) {
+            half = interval_length >> 1;
+            interval_length -= half;
+            for (npy_intp i = 0; i < key_len; ++i) {
+                npy_intp &base = *(npy_intp *)(ret + i * ret_str);
+                const T pivot = *(const T *)(arr + (base + half) * arr_str);
+                const T key_val = *(const T *)(key + i * key_str);
+                base += cmp(pivot, key_val) * half;
+            }
+            ++completed_levels;
+        }
+
+        bool strongly_local = true;
+        const npy_intp last = key_len - 1;
+        npy_intp prev = *(npy_intp *)ret;
+
+        if (research_policy == 0) {
+            const npy_intp checks =
+                    (observations < last) ? observations : last;
+            npy_intp min_base = prev;
+            npy_intp max_base = prev;
+            npy_uintp total_variation = 0;
+            npy_intp prev_i = 0;
+            for (npy_intp j = 1; j <= checks; ++j) {
+                npy_intp i = (j * last) / checks;
+                if (i <= prev_i) {
+                    i = prev_i + 1;
+                }
+                if (i >= key_len) {
+                    i = last;
+                }
+                const npy_intp pos = *(npy_intp *)(ret + i * ret_str);
+                total_variation += (pos >= prev)
+                        ? (npy_uintp)(pos - prev)
+                        : (npy_uintp)(prev - pos);
+                if (pos < min_base) {
+                    min_base = pos;
+                }
+                if (pos > max_base) {
+                    max_base = pos;
+                }
+                prev = pos;
+                prev_i = i;
+            }
+            strongly_local =
+                    total_variation == (npy_uintp)(max_base - min_base);
+        }
+        else {
+            const bool fixed16 =
+                    research_policy == 3 || research_policy == 5 ||
+                    research_policy == 6;
+            const bool fixed32 = research_policy == 4;
+            const npy_intp checks = fixed16 ? 16 :
+                    (fixed32 ? 32 :
+                     ((observations < last) ? observations : last));
+            if (last < checks) {
+                run_current(key, ret, key_len);
+                return;
+            }
+
+            int direction = 0;
+            bool reversed = false;
+            for (npy_intp j = 1; j <= checks; ++j) {
+                npy_intp i;
+                if (fixed16) {
+                    i = (j * last) >> 4;
+                }
+                else if (fixed32) {
+                    i = (j * last) >> 5;
+                }
+                else {
+                    i = (j * last) / checks;
+                }
+                const npy_intp pos = *(npy_intp *)(ret + i * ret_str);
+                if (pos > prev) {
+                    if (direction < 0) {
+                        reversed = true;
+                    }
+                    direction = 1;
+                }
+                else if (pos < prev) {
+                    if (direction > 0) {
+                        reversed = true;
+                    }
+                    direction = -1;
+                }
+                prev = pos;
+                if (research_policy != 2 && reversed) {
+                    break;
+                }
+            }
+            strongly_local = !reversed;
+        }
+
+        if (strongly_local) {
+            run_galloping(key, ret, key_len);
+            return;
+        }
+
+        while (interval_length > 1) {
+            half = interval_length >> 1;
+            interval_length -= half;
+            for (npy_intp i = 0; i < key_len; ++i) {
+                npy_intp &base = *(npy_intp *)(ret + i * ret_str);
+                const T pivot = *(const T *)(arr + (base + half) * arr_str);
+                const T key_val = *(const T *)(key + i * key_str);
+                base += cmp(pivot, key_val) * half;
+            }
+        }
+
+        for (npy_intp i = 0; i < key_len; ++i) {
+            npy_intp &base = *(npy_intp *)(ret + i * ret_str);
+            const T key_val = *(const T *)(key + i * key_str);
+            base += cmp(*(const T *)(arr + base * arr_str), key_val);
+        }
+        return;
+    }
+
 
     const npy_intp chunk_size = research_chunk_size;
     for (npy_intp offset = 0; offset < key_len; offset += chunk_size) {
