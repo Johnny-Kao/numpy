@@ -1,0 +1,193 @@
+name: searchsorted near-free selector convergence
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  converge:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: micro-1vcpu-2gb
+            cpus: 1
+            mem_kb: 2097152
+          - profile: small-2vcpu-4gb
+            cpus: 2
+            mem_kb: 4194304
+          - profile: standard-4vcpu-8gb
+            cpus: 4
+            mem_kb: 8388608
+          - profile: standard-4vcpu-14gb
+            cpus: 4
+            mem_kb: 14680064
+
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PROFILE_NAME: ${{ matrix.profile }}
+      PROFILE_CPUS: ${{ matrix.cpus }}
+      PROFILE_MEM_KB: ${{ matrix.mem_kb }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          ref: research/searchsorted-selector-tournament
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Record runner metadata
+        run: |
+          mkdir -p nearfree-results
+          {
+            echo "profile=$PROFILE_NAME"
+            echo "logical_cpus=$PROFILE_CPUS"
+            echo "logical_mem_kb=$PROFILE_MEM_KB"
+            echo "host_cpu=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | xargs)"
+            echo "host_nproc=$(nproc)"
+            echo "host_mem_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')"
+          } | tee nearfree-results/runner-metadata.txt
+
+      - name: Build one research wheel
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          mkdir -p "$RUNNER_TEMP/wheels"
+          python -m pip wheel . -w "$RUNNER_TEMP/wheels"
+
+      - name: Create benchmark environment
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install "$RUNNER_TEMP"/wheels/numpy-*.whl
+
+      - name: Run staged decision tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          BENCH=benchmarks/benchmarks/searchsorted_selector_tournament.py
+          ANALYZE=benchmarks/benchmarks/searchsorted_nearfree_stage_analyze.py
+          CPULIST="0-$((PROFILE_CPUS-1))"
+
+          run_case () {
+            local label="$1"
+            local suite="$2"
+            shift 2
+            (
+              ulimit -v "$PROFILE_MEM_KB"
+              taskset -c "$CPULIST" env "$@"                 SEARCHSORTED_TOURNAMENT_SUITE="$suite"                 SEARCHSORTED_TOURNAMENT_OUT="nearfree-results/$label-$suite.json"                 NPY_SEARCHSORTED_RESEARCH_LABEL="$label"                 "$RUNNER_TEMP/venv/bin/python" "$BENCH"
+            )
+          }
+
+          run_current () {
+            local label="$1"
+            local suite="$2"
+            run_case "$label" "$suite"               NPY_SEARCHSORTED_RESEARCH_MODE=current
+          }
+
+          run_variant () {
+            local id="$1"
+            local label="$2"
+            local suite="$3"
+            case "$id" in
+              a16) policy=0; obs=16 ;;
+              a32) policy=0; obs=32 ;;
+              b16e) policy=1; obs=16 ;;
+              b32e) policy=1; obs=32 ;;
+              b16full) policy=2; obs=16 ;;
+              c16) policy=3; obs=16 ;;
+              c32) policy=4; obs=32 ;;
+              c16q2k) policy=5; obs=16 ;;
+              c16q8k) policy=6; obs=16 ;;
+              *) echo "unknown variant $id" >&2; exit 2 ;;
+            esac
+            run_case "$label" "$suite"               NPY_SEARCHSORTED_RESEARCH_MODE=coarse_p0_nearfree               NPY_SEARCHSORTED_RESEARCH_POLICY="$policy"               NPY_SS_COARSE_OBS="$obs"
+          }
+
+          # ------------------------------------------------------------
+          # Layer 1: cheap mechanism/cost screen.
+          # All foreseeable A/B/C implementations are tested once.
+          # ------------------------------------------------------------
+          S1=nearfree_screen
+          run_current current-before "$S1"
+          for id in a16 a32 b16e b32e b16full c16 c32 c16q2k c16q8k; do
+            run_variant "$id" "stage1-$id" "$S1"
+          done
+          run_current current-mid "$S1"
+          run_current current-after "$S1"
+
+          "$RUNNER_TEMP/venv/bin/python" "$ANALYZE" nearfree-results "$S1"             --select 3 --out nearfree-results/stage1-decision.json             | tee nearfree-results/stage1-summary.txt
+
+          mapfile -t FINALISTS < <(
+            "$RUNNER_TEMP/venv/bin/python" - <<'PY'
+          import json
+          d=json.load(open("nearfree-results/stage1-decision.json"))
+          for x in d.get("selected", []):
+              print(x.removeprefix("stage1-"))
+          PY
+          )
+
+          if [[ "${#FINALISTS[@]}" -eq 0 ]]; then
+            echo "No useful Layer-1 finalist; stop." | tee nearfree-results/stop-reason.txt
+            exit 0
+          fi
+
+          # ------------------------------------------------------------
+          # Layer 2: broad correctness/performance validation.
+          # Only Layer-1 finalists pay for the broad matrix.
+          # ------------------------------------------------------------
+          S2=online_broad
+          run_current current-before "$S2"
+          for id in "${FINALISTS[@]}"; do
+            run_variant "$id" "stage2-$id" "$S2"
+          done
+          run_current current-mid "$S2"
+          run_current current-after "$S2"
+
+          "$RUNNER_TEMP/venv/bin/python" "$ANALYZE" nearfree-results "$S2"             --select 2 --gate --out nearfree-results/stage2-decision.json             | tee nearfree-results/stage2-summary.txt
+
+          mapfile -t PASSING < <(
+            "$RUNNER_TEMP/venv/bin/python" - <<'PY'
+          import json
+          d=json.load(open("nearfree-results/stage2-decision.json"))
+          for x in d.get("passing", []):
+              print(x.removeprefix("stage2-"))
+          PY
+          )
+
+          if [[ "${#PASSING[@]}" -eq 0 ]]; then
+            echo "Layer-2 gate failed: no candidate simultaneously meets random-tax and locality thresholds."               | tee nearfree-results/stop-reason.txt
+            exit 0
+          fi
+
+          # Keep Layer 3 bounded: at most the best two passing finalists.
+          PASSING=("${PASSING[@]:0:2}")
+
+          # ------------------------------------------------------------
+          # Layer 3: production gate.
+          # Heavy large-N/Q stress + tiny-Q guard behavior.
+          # ------------------------------------------------------------
+          for S3 in adaptive_stress tiny; do
+            run_current "current-before-$S3" "$S3"
+            for id in "${PASSING[@]}"; do
+              run_variant "$id" "stage3-$id-$S3" "$S3"
+            done
+            run_current "current-mid-$S3" "$S3"
+            run_current "current-after-$S3" "$S3"
+          done
+
+          echo "Layer-3 production gate completed." | tee nearfree-results/stage3-complete.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: searchsorted-nearfree-${{ matrix.profile }}
+          path: nearfree-results/
