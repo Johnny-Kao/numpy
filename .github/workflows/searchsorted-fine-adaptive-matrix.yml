@@ -1,9 +1,6 @@
 name: searchsorted fine adaptive matrix
 
 on:
-  push:
-    branches:
-      - research/searchsorted-selector-tournament
   workflow_dispatch:
 
 permissions:
