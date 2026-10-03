@@ -1084,3 +1084,163 @@ These were harness-only failures; no algorithm/selector correctness or performan
 Reusable rule:
 
 > Diagnostic scripts that reuse benchmark generators must match the benchmark harness's environment defaults and case-validity filtering before expensive CI is launched.
+
+
+## 29. Session handoff checkpoint — selector research convergence phase
+
+Date: 2026-10-03 JST
+
+### Current phase
+
+The investigation has entered **selector convergence**, not algorithm discovery.
+
+Established:
+
+1. The upstream/current typed batched binary search is the correct general/random fallback.
+2. Galloping/local search is a real specialized fast path and can deliver multi-x gains when insertion positions have locality.
+3. The production problem is selector precision and selector tax, not whether the local algorithm works.
+4. Selector architectures that pre-scan, split prefixes, or repeatedly chunk current have been tested and rejected because they materially regress random/general workloads.
+5. The strongest architecture is **coarse-base piggybacking**:
+   - execute the first few levels of the existing full-batch current search;
+   - reuse the already-computed `ret/base` values as a coarse insertion-position signature;
+   - do not add a separate query scan;
+   - do not split the current batch;
+   - ambiguous/general input continues current from the already-computed state;
+   - only strongly local input may route to the specialized path.
+
+### Best validated evidence so far
+
+Run `37126529277` — coarse-base piggyback:
+- 4/4 profiles PASS;
+- random median-like behavior roughly ~1.03-1.08x current, best observed ~1.026x;
+- dense/duplicates roughly ~3-4x faster;
+- medium roughly ~1.9-2.2x faster;
+- mostly-monotonic roughly ~2.7-3x faster.
+
+Run `37127994426` — coarse roughness:
+- 4/4 profiles PASS;
+- `total_variation == range` / strict non-backtracking is the only viable roughness condition;
+- permissive factor=2 was decisively unsafe;
+- many random medians reached approximately current, but rare false-positive tails remained.
+
+Run `37129876085` — focused observations:
+- 4/4 profiles PASS;
+- levels 3/4 × observations 8/16/32 × strict factor=1;
+- increasing observations improved some false-positive tails but did not make them uniformly safe across all profiles;
+- selector architecture therefore was **not frozen**.
+
+Representative balanced random results from that run:
+- 1 vCPU / 2 GiB, l4/o16: ~1.003x median-like, ~1.109x worst summarized;
+- 2 vCPU / 4 GiB, l4/o32: ~1.014x, ~1.103x;
+- 4 vCPU / 8 GiB, l4/o16: ~1.055x, ~1.080x;
+- 4 vCPU / 14 GiB, l3/o16: ~1.033x, ~1.095x.
+
+### Current research question
+
+Why do a small number of random workloads still look strictly monotonic in sampled coarse `base` space and get falsely routed to galloping?
+
+The next discriminator must come from **already-computed coarse state only**.
+
+Candidate signals:
+- distinct coarse bucket count;
+- tie / zero-step fraction;
+- forward/backward step count;
+- range;
+- total variation;
+- max step;
+- span/bucket occupancy;
+- concentration;
+- minimum forward progress.
+
+### Experimental-method upgrade
+
+The research process now uses a **precomputed decision tree** for expensive CI:
+
+- mechanism-unknown stage: small sequential experiments are acceptable;
+- once likely branches are known: collect evidence for all foreseeable next branches in one runner allocation;
+- same-machine baselines are preserved;
+- independent policy candidates are batched in the same workflow;
+- do not run one workflow per small hypothesis unless a genuinely new unknown appears.
+
+This rule was also promoted to the OSS Engineering Toolkit Master SOP.
+
+### Current implementation for the convergence run
+
+New research mode:
+`coarse_decision_tree`
+
+Commit:
+`c168c73ff4de1bfc373898713af6d93171c79880`
+
+Policies evaluated in one mode:
+- p0: strict roughness baseline;
+- p1: strict + minimum distinct buckets;
+- p2: strict + minimum forward progress;
+- p3: strict + tie-fraction guard;
+- p4: combined conservative gate.
+
+Diagnostic script:
+`benchmarks/benchmarks/searchsorted_coarse_decision_tree_diagnostics.py`
+
+Diagnostic commit:
+`7da5390693bb040f7ae5f94adf7fdb5da3cbeba9`
+
+Workflow:
+`.github/workflows/searchsorted-decision-tree-convergence.yml`
+
+Workflow commit:
+`96a7049757e1bbe404e70bacad38f203073b014e`
+
+Two harness-only failures occurred and were fixed:
+- run `37132141827`: missing research-mode env during diagnostics import;
+- run `37132551688`: diagnostics did not skip invalid synthetic workloads.
+
+Fix commits:
+- `0f72abb06911c7aeff330ae041d60f8d6d699d1c`
+- `18e9cae03688a7da2bede7776c48428b6e35c4d3`
+
+These failures contain no algorithm evidence.
+
+### Active run at handoff
+
+Primary run:
+`37133052228`
+
+Status at handoff:
+- micro-1vcpu-2gb: in progress
+- small-2vcpu-4gb: in progress
+- standard-4vcpu-8gb: in progress
+- standard-4vcpu-14gb: in progress
+- no failure observed at the checkpoint
+
+The run collects both:
+1. coarse signature diagnostics for every broad workload case;
+2. real timing for p0-p4 across levels 3/4 and observations 16/32 on the same runner allocation.
+
+### Next-session procedure
+
+1. Read this record first.
+2. Check run `37133052228`.
+3. If complete, extract:
+   - diagnostic policy route counts;
+   - exact false-positive random signatures;
+   - normalized timing summaries for p0-p4;
+   - baseline drift.
+4. Compare false-positive random cases against correctly rejected random and true local cases.
+5. Select only a conservative discriminator supported by the evidence.
+6. If one policy bounds random tails across profiles while retaining useful locality gains, freeze the selector architecture.
+7. If no coarse-state policy can separate the cases, conclude that this resolution is insufficient and narrow the selector or PR2 scope rather than restarting parameter sweeps.
+8. Update this same research record after the result.
+9. Do not open an upstream PR without explicit user signoff.
+
+### Do not repeat
+
+Do not restart:
+- global pre-scan selector research;
+- fixed chunk search;
+- broad observation-count sweeps;
+- prefix-splitting selectors;
+- factor>1 roughness;
+- blind parameter tuning.
+
+The research question is now narrow: **can a near-zero-cost structural discriminator from existing coarse binary-search state eliminate the remaining random false positives?**
