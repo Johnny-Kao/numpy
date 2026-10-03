@@ -119,6 +119,9 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
         if (std::strcmp(mode, "gallop_chunk") == 0) {
             return 8;
         }
+        if (std::strcmp(mode, "adaptive") == 0) {
+            return 9;
+        }
         return 0;
     }();
 
@@ -132,6 +135,15 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
             return (npy_intp)16;
         }
         return (npy_intp)value;
+    }();
+
+    static const int research_policy = []() {
+        const char *raw = std::getenv("NPY_SEARCHSORTED_RESEARCH_POLICY");
+        if (raw == nullptr) {
+            return 0;
+        }
+        const long value = std::strtol(raw, nullptr, 10);
+        return (value >= 0 && value <= 7) ? (int)value : 0;
     }();
 
     auto run_current = [&](const char *keys, char *rets, npy_intp count) {
@@ -300,6 +312,62 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
         return true;
     };
 
+    auto sampled_inversions =
+            [&](const char *keys, npy_intp count, npy_intp samples,
+                npy_intp stop_after) -> npy_intp {
+        if (count < 2 || samples <= 0) {
+            return 0;
+        }
+        const npy_intp checks = (count - 1 < samples) ? count - 1 : samples;
+        npy_intp inversions = 0;
+        for (npy_intp j = 1; j <= checks; ++j) {
+            npy_intp i = (j * (count - 1)) / checks;
+            if (i < 1) {
+                i = 1;
+            }
+            const T prev = *(const T *)(keys + (i - 1) * key_str);
+            const T cur = *(const T *)(keys + i * key_str);
+            if (less(cur, prev)) {
+                ++inversions;
+                if (inversions > stop_after) {
+                    break;
+                }
+            }
+        }
+        return inversions;
+    };
+
+    struct adaptive_policy_t {
+        npy_intp activate_q;
+        npy_intp stage2_q;
+        npy_intp stage3_q;
+        npy_intp samples1;
+        npy_intp samples2;
+        npy_intp samples3;
+        npy_intp inv1;
+        npy_intp inv2;
+        npy_intp inv3;
+    };
+
+    static constexpr adaptive_policy_t adaptive_policies[] = {
+        /* P0 conservative */
+        {64, 1024, 16384, 4, 8, 16, 0, 0, 0},
+        /* P1 balanced strict */
+        {32, 512, 8192, 4, 8, 16, 0, 0, 0},
+        /* P2 balanced tolerant */
+        {32, 512, 8192, 4, 8, 24, 0, 1, 2},
+        /* P3 aggressive */
+        {16, 256, 4096, 4, 8, 32, 0, 1, 3},
+        /* P4 heavy-only, deeper validation */
+        {128, 2048, 32768, 8, 16, 64, 0, 1, 3},
+        /* P5 early activation, strict */
+        {16, 128, 2048, 4, 8, 16, 0, 0, 0},
+        /* P6 tolerant large-workload */
+        {64, 1024, 8192, 4, 12, 32, 0, 1, 2},
+        /* P7 ultra-conservative random protection */
+        {256, 4096, 65536, 8, 16, 32, 0, 0, 1},
+    };
+
     if (research_mode == 0) {
         run_current(key, ret, key_len);
         return;
@@ -324,6 +392,42 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
     if (research_mode == 4 || research_mode == 5) {
         const npy_intp samples = (research_mode == 4) ? 16 : 32;
         if (sampled_nondecreasing(key, key_len, samples)) {
+            run_galloping(key, ret, key_len);
+        }
+        else {
+            run_current(key, ret, key_len);
+        }
+        return;
+    }
+
+    if (research_mode == 9) {
+        const adaptive_policy_t &policy =
+                adaptive_policies[research_policy];
+
+        if (key_len < policy.activate_q) {
+            run_current(key, ret, key_len);
+            return;
+        }
+
+        npy_intp samples = policy.samples1;
+        npy_intp allowed = policy.inv1;
+        if (key_len >= policy.stage3_q) {
+            samples = policy.samples3;
+            allowed = policy.inv3;
+        }
+        else if (key_len >= policy.stage2_q) {
+            samples = policy.samples2;
+            allowed = policy.inv2;
+        }
+
+        /*
+         * The selector cost is capped by the policy's sample budget.
+         * Stop as soon as the inversion allowance is exceeded so random
+         * inputs pay only a small fraction of the maximum inspection cost.
+         */
+        const npy_intp inversions =
+                sampled_inversions(key, key_len, samples, allowed);
+        if (inversions <= allowed) {
             run_galloping(key, ret, key_len);
         }
         else {
