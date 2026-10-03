@@ -141,6 +141,20 @@ def suite_cases() -> tuple[tuple[int, ...], tuple[int, ...], tuple[str, ...], tu
             ("dense", "medium", "sparse", "mostly_monotonic", "random", "block_sorted", "reversal_bursts"),
             (np.dtype("int32"),),
         )
+    if SUITE == "nearfree_screen":
+        return (
+            (1_000_000, 10_000_000),
+            (256, 1_024, 8_192, 100_000),
+            ("dense", "medium", "mostly_monotonic", "random", "duplicates"),
+            (np.dtype("int32"),),
+        )
+    if SUITE == "nearfree_tail":
+        return (
+            (1_000_000, 10_000_000),
+            (1_024, 8_192, 100_000),
+            ("random", "dense", "medium", "mostly_monotonic", "duplicates"),
+            (np.dtype("int32"), np.dtype("int64"), np.dtype("float64")),
+        )
     if SUITE == "online_broad":
         return (
             (1_000_000, 10_000_000),
