@@ -1,9 +1,6 @@
 name: searchsorted coarse roughness focused
 
 on:
-  push:
-    branches:
-      - research/searchsorted-selector-tournament
   workflow_dispatch:
 
 permissions:
