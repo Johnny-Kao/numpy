@@ -662,3 +662,94 @@ Primary success criterion:
 - broad behavior stable across int32/int64/float64, 1D/2D, multiple Q/N and four logical resource profiles.
 
 If this mechanism succeeds, the next engineering step is not further selector tuning. It is to implement a specialized local finisher that resumes from the coarse bounds instead of restarting galloping from scratch.
+
+
+## 23. Coarse-base piggyback result
+
+Run:
+`37126529277`
+
+All four logical resource profiles completed successfully.
+
+Representative normalized shape-level results:
+
+### 1 vCPU / 2 GiB
+- best random observed: ~1.045x at 4 coarse levels / 8 observations;
+- dense: ~0.328x (~3.0x faster);
+- duplicates: ~0.297x (~3.4x faster);
+- medium: ~0.535x (~1.9x faster);
+- mostly-monotonic: ~0.376x (~2.7x faster).
+
+### 2 vCPU / 4 GiB
+- random generally ~1.06-1.07x on useful settings;
+- dense ~0.24-0.33x;
+- duplicates ~0.21-0.30x;
+- medium ~0.46-0.54x;
+- mostly-monotonic ~0.29-0.38x.
+
+### 4 vCPU / 8 GiB
+- random generally ~1.06-1.08x;
+- dense ~0.24-0.33x;
+- duplicates ~0.21-0.30x;
+- medium ~0.46-0.53x;
+- mostly-monotonic ~0.30-0.38x.
+
+### 4 vCPU / 14 GiB
+- best random observed: ~1.026x at 3 coarse levels / 8 observations;
+- dense ~0.282x (~3.5x faster);
+- duplicates ~0.259x (~3.9x faster);
+- medium ~0.511x (~2.0x faster);
+- mostly-monotonic ~0.338x (~3.0x faster).
+
+Baseline before/after median drift remained ~1.0 on all profiles, though individual-case tails were noisier.
+
+Interpretation:
+
+> Piggybacking on coarse `ret/base` state is the first architecture that gets the random path close to the target without splitting the full batch or pre-scanning query values.
+
+Compared with previous architectures:
+
+- global sampling: commonly +20-50% random regression;
+- online chunking: roughly +3-20%, profile dependent;
+- one-prefix early gate: roughly +13-22%;
+- coarse-base piggyback: commonly about +3-8%, with best profile/settings near +2.6-4.5%.
+
+The remaining gap is now small enough to treat as a selector-quality problem rather than an architecture problem.
+
+### Why the current coarse classifier is still imperfect
+
+The first piggyback classifier only counts inversions among a few coarse base samples.
+
+At only 2-4 binary-search levels there are few coarse buckets, so random samples frequently contain repeated bucket values. A sequence with many ties can appear nondecreasing even when the underlying insertion positions are random. This creates false-positive local routing and explains part of the remaining random regression.
+
+### Next hypothesis: path roughness from already-computed bases
+
+Use the same sampled coarse bases, but accumulate a tiny arithmetic signature:
+
+```
+range = max(base) - min(base)
+total_variation = sum(abs(base[i] - base[i-1]))
+```
+
+For a clean monotonic/local path:
+
+```
+total_variation ~= range
+```
+
+For random/scattered positions:
+
+```
+total_variation >> range
+```
+
+This needs only integer subtraction/absolute-value/addition over a handful of already-existing `base` values. It adds no extra query memory pass and reuses state already produced by the current algorithm.
+
+The next selector should combine:
+
+- inversion count;
+- coarse path total variation;
+- coarse range;
+- conservative fallback to current when evidence is ambiguous.
+
+The objective is not maximum recall. The objective is high precision: only strongly local inputs should route to the specialized path.
