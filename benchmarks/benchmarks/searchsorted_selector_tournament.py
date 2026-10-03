@@ -141,6 +141,20 @@ def suite_cases() -> tuple[tuple[int, ...], tuple[int, ...], tuple[str, ...], tu
             ("dense", "medium", "sparse", "mostly_monotonic", "random", "block_sorted", "reversal_bursts"),
             (np.dtype("int32"),),
         )
+    if SUITE == "activation_screen":
+        return (
+            (1_000_000,),
+            (64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768),
+            ("dense", "medium", "mostly_monotonic", "random", "duplicates"),
+            (np.dtype("int32"),),
+        )
+    if SUITE == "activation_boundary":
+        return (
+            (1_000_000, 10_000_000),
+            (256, 512, 1_024, 2_048, 4_096, 8_192, 16_384, 32_768, 65_536),
+            ("dense", "medium", "mostly_monotonic", "random", "duplicates"),
+            (np.dtype("int32"), np.dtype("int64"), np.dtype("float64")),
+        )
     if SUITE == "nearfree_screen":
         return (
             (1_000_000, 10_000_000),
