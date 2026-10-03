@@ -1,9 +1,6 @@
 name: searchsorted adaptive policy tournament
 
 on:
-  push:
-    branches:
-      - research/searchsorted-selector-tournament
   workflow_dispatch:
 
 permissions:
