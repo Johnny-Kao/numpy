@@ -1,9 +1,6 @@
 name: searchsorted coarse-base piggyback matrix
 
 on:
-  push:
-    branches:
-      - research/searchsorted-selector-tournament
   workflow_dispatch:
 
 permissions:
