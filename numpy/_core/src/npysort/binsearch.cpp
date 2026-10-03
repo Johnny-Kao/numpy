@@ -122,6 +122,9 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
         if (std::strcmp(mode, "adaptive") == 0) {
             return 9;
         }
+        if (std::strcmp(mode, "adaptive_dynamic") == 0) {
+            return 10;
+        }
         return 0;
     }();
 
@@ -145,6 +148,19 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
         const long value = std::strtol(raw, nullptr, 10);
         return (value >= 0 && value <= 7) ? (int)value : 0;
     }();
+
+    auto env_intp = [](const char *name, npy_intp fallback,
+                       npy_intp min_value, npy_intp max_value) {
+        const char *raw = std::getenv(name);
+        if (raw == nullptr) {
+            return fallback;
+        }
+        const long value = std::strtol(raw, nullptr, 10);
+        if (value < min_value || value > max_value) {
+            return fallback;
+        }
+        return (npy_intp)value;
+    };
 
     auto run_current = [&](const char *keys, char *rets, npy_intp count) {
         if (count == 0) {
@@ -425,6 +441,46 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
          * Stop as soon as the inversion allowance is exceeded so random
          * inputs pay only a small fraction of the maximum inspection cost.
          */
+        const npy_intp inversions =
+                sampled_inversions(key, key_len, samples, allowed);
+        if (inversions <= allowed) {
+            run_galloping(key, ret, key_len);
+        }
+        else {
+            run_current(key, ret, key_len);
+        }
+        return;
+    }
+
+    if (research_mode == 10) {
+        adaptive_policy_t policy = {
+            env_intp("NPY_SS_ACTIVATE_Q", 128, 1, 100000000),
+            env_intp("NPY_SS_STAGE2_Q", 2048, 1, 100000000),
+            env_intp("NPY_SS_STAGE3_Q", 32768, 1, 100000000),
+            env_intp("NPY_SS_SAMPLES1", 8, 1, 256),
+            env_intp("NPY_SS_SAMPLES2", 16, 1, 256),
+            env_intp("NPY_SS_SAMPLES3", 64, 1, 512),
+            env_intp("NPY_SS_INV1", 0, 0, 64),
+            env_intp("NPY_SS_INV2", 1, 0, 64),
+            env_intp("NPY_SS_INV3", 3, 0, 128),
+        };
+
+        if (key_len < policy.activate_q) {
+            run_current(key, ret, key_len);
+            return;
+        }
+
+        npy_intp samples = policy.samples1;
+        npy_intp allowed = policy.inv1;
+        if (key_len >= policy.stage3_q) {
+            samples = policy.samples3;
+            allowed = policy.inv3;
+        }
+        else if (key_len >= policy.stage2_q) {
+            samples = policy.samples2;
+            allowed = policy.inv2;
+        }
+
         const npy_intp inversions =
                 sampled_inversions(key, key_len, samples, allowed);
         if (inversions <= allowed) {
