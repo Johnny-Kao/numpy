@@ -1061,3 +1061,26 @@ Rules:
 - only launch a later run if the prior evidence exposes a genuinely new unknown that could not reasonably have been anticipated.
 
 This is now the active experimental-design rule for the searchsorted investigation.
+
+
+## 28. Decision-tree convergence harness failures and fixes
+
+Two consecutive workflow failures occurred before any selector timing evidence was collected.
+
+Run `37132141827`:
+- failure: `KeyError: NPY_SEARCHSORTED_RESEARCH_MODE`
+- cause: the diagnostics script imported the shared tournament module, which reads the research mode at import time
+- fix commit: `0f72abb06911c7aeff330ae041d60f8d6d699d1c`
+- fix: diagnostics sets a harmless default mode before importing the shared workload generator
+
+Run `37132551688`:
+- failure: `ValueError: workload does not fit`
+- cause: diagnostics did not mirror the benchmark harness behavior that skips invalid synthetic n/q/shape combinations
+- fix commit: `18e9cae03688a7da2bede7776c48428b6e35c4d3`
+- fix: catch `ValueError` during workload generation and skip the invalid case
+
+These were harness-only failures; no algorithm/selector correctness or performance conclusion should be drawn from them.
+
+Reusable rule:
+
+> Diagnostic scripts that reuse benchmark generators must match the benchmark harness's environment defaults and case-validity filtering before expensive CI is launched.
