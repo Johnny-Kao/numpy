@@ -230,7 +230,7 @@ def measure(arr: np.ndarray, queries: np.ndarray, side: str) -> dict[str, float 
 def main() -> None:
     ns, qs, shapes, dtypes = suite_cases()
     rows: list[dict[str, object]] = []
-    layouts = ("1d", "2d") if SUITE == "online_broad" else ("1d",)
+    layouts = ("1d", "2d") if SUITE in {"online_broad", "nearfree_tail"} else ("1d",)
 
     for dtype in dtypes:
         for n in ns:
