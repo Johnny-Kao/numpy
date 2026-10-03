@@ -753,3 +753,78 @@ The next selector should combine:
 - conservative fallback to current when evidence is ambiguous.
 
 The objective is not maximum recall. The objective is high precision: only strongly local inputs should route to the specialized path.
+
+
+## 24. Coarse roughness result
+
+Run:
+`37127994426`
+
+All four profiles completed successfully.
+
+The roughness classifier tested:
+
+```
+range = max(base) - min(base)
+total_variation = sum(abs(base[i] - base[i-1]))
+```
+
+with factors 1 and 2, coarse levels 3/4/5, and 4/8 sampled coarse bases.
+
+### Main result
+
+`roughness_factor = 1` is the only viable setting in this screen.
+
+Representative median-like random ratios with factor 1 were often near current:
+
+- 1 vCPU / 2 GiB: ~0.98-1.04x depending on levels/observations;
+- 2 vCPU / 4 GiB: ~0.99-1.04x;
+- 4 vCPU / 8 GiB: ~1.02-1.07x;
+- 4 vCPU / 14 GiB: ~0.93-1.06x.
+
+At the same time locality gains remained substantial:
+
+- dense: roughly 0.27-0.38x;
+- duplicates: roughly 0.23-0.35x;
+- medium: roughly 0.52-0.68x;
+- mostly-monotonic: roughly 0.32-0.46x.
+
+However individual random-case tails remained materially worse (commonly ~1.2-3x in the worst summarized case, depending on profile/settings).
+
+`roughness_factor = 2` was decisively unsafe:
+
+- random medians frequently ~2.3-2.6x;
+- worst cases reached ~5-13x.
+
+This indicates that allowing even modest backtracking in a coarse sampled trajectory admits too many random patterns.
+
+### Interpretation
+
+For nonnegative path distance:
+
+```
+total_variation >= range
+```
+
+Therefore `factor=1` effectively requires the sampled coarse path to have no backtracking. This is a strong, cheap, platform-independent condition and is appropriate for a high-precision selector.
+
+The remaining failures are not due to selector arithmetic cost. They are false positives from undersampling: with only 4-8 sampled coarse bases, a random sequence can occasionally look monotonic by chance.
+
+### Next experiment
+
+Keep the architecture and strict `factor=1` rule fixed.
+
+Increase only the number of sampled already-computed coarse bases:
+
+- observations: 8 / 16 / 32
+- coarse levels: 3 / 4
+
+No new query memory pass is introduced; these are extra integer reads from `ret/base` that current already produced.
+
+Goal:
+
+- preserve random median near 1.00;
+- collapse worst random false-positive tails;
+- retain most locality gains.
+
+If 16/32 observations remove the tails with negligible median cost, freeze the selector architecture.
