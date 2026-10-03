@@ -828,3 +828,70 @@ Goal:
 - retain most locality gains.
 
 If 16/32 observations remove the tails with negligible median cost, freeze the selector architecture.
+
+
+## 25. Current research status — focused strict roughness gate in progress
+
+Current active branch:
+`research/searchsorted-selector-tournament`
+
+Current production hypothesis:
+
+> Preserve the existing full-batch current search. Reuse the coarse insertion-position bases already computed by the first few binary-search levels, and classify only when the sampled coarse path is strictly non-backtracking.
+
+Why this is now the leading architecture:
+
+- global pre-scan/sampling imposed too much random-path overhead;
+- fixed chunking damaged the existing full-batch ILP/cache behavior;
+- one-prefix early gating still cost roughly 13-22% on random workloads;
+- coarse-base piggybacking reduced random median overhead to roughly low-single-digit percentages while preserving large locality gains;
+- adding path roughness (`total_variation / range`) further moved many random medians to approximately current performance;
+- permissive roughness (`factor=2`) is unsafe and has been rejected;
+- strict roughness (`factor=1`) is the only viable criterion from the latest sweep.
+
+Current unresolved issue:
+
+> With only 4-8 sampled coarse bases, a random trajectory can occasionally look monotonic by chance and be falsely routed to galloping, creating large tail regressions.
+
+Current focused experiment:
+
+Workflow:
+`.github/workflows/searchsorted-coarse-roughness-focused.yml`
+
+Workflow commit:
+`b35cc79bfa0c26fd35ed73cd32548dec70962bf8`
+
+Run:
+`37129876085`
+
+Status at 2026-10-03 23:47 JST:
+
+- micro-1vcpu-2gb: in progress
+- small-2vcpu-4gb: in progress
+- standard-4vcpu-8gb: in progress
+- standard-4vcpu-14gb: in progress
+- no failures observed
+
+Focused matrix:
+
+- coarse levels: 3 / 4
+- observations: 8 / 16 / 32
+- roughness factor: fixed at 1
+- broad workload suite unchanged
+
+Decision gate after this run:
+
+1. If 16/32 observations collapse random false-positive tails while median random stays approximately current and locality gains remain meaningful:
+   - freeze selector architecture;
+   - implement a production-shaped local finisher that resumes from the already-computed coarse bounds instead of restarting galloping;
+   - remove research knobs;
+   - run correctness/ASV/cross-platform CI.
+2. If tails remain materially unsafe:
+   - do not resume broad threshold sweeps;
+   - inspect the exact false-positive distributions and add only one conservative structural discriminator, or narrow PR2 scope.
+
+Current expected upstream positioning if successful:
+
+> A conservative locality-aware fast path for primitive typed `searchsorted` that reuses state already produced by the existing batched binary search, leaves ambiguous/general workloads on the current implementation, and avoids any separate query pre-scan.
+
+No upstream PR has been opened. User signoff remains required before submission.
