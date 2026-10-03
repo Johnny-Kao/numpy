@@ -13,6 +13,11 @@ from pathlib import Path
 
 import numpy as np
 
+# Importing the shared workload generator should not require a benchmark mode.
+# The tournament module reads this at import time, so give diagnostics a
+# harmless default before importing it.
+os.environ.setdefault("NPY_SEARCHSORTED_RESEARCH_MODE", "current")
+
 from searchsorted_selector_tournament import make_queries
 
 OUT = Path(os.environ.get("SEARCHSORTED_DIAG_OUT", "coarse-decision-tree-diagnostics.json"))
