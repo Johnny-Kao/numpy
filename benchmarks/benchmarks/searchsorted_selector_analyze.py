@@ -18,7 +18,10 @@ def load(path: Path) -> list[dict]:
 
 
 def key(row: dict) -> tuple:
-    return (row["dtype"], row["n"], row["q"], row["shape"], row["side"])
+    return (
+        row["dtype"], row["n"], row["q"], row["shape"],
+        row.get("layout", "1d"), row["side"],
+    )
 
 
 before_path = root / f"current-before-{suite}.json"
@@ -64,6 +67,7 @@ for path_index, path in enumerate(candidate_paths):
                 "n": row["n"],
                 "q": row["q"],
                 "shape": row["shape"],
+                "layout": row.get("layout", "1d"),
                 "side": row["side"],
                 "baseline_before_ns": b,
                 "baseline_mid_ns": m if m is not None else "",
