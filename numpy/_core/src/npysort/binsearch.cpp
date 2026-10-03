@@ -62,7 +62,7 @@ template <class Tag, side_t side>
 static void
 binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
           npy_intp key_len, npy_intp arr_str, npy_intp key_str,
-          npy_intp ret_str, PyArrayObject *, PyArrayObject *,
+          npy_intp ret_str, PyArrayObject *key_arr, PyArrayObject *arr_arr,
           PyArray_BinSearchCompareFunc *)
 {
     using T = typename Tag::type;
@@ -124,6 +124,9 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
         }
         if (std::strcmp(mode, "adaptive_dynamic") == 0) {
             return 10;
+        }
+        if (std::strcmp(mode, "online_locality") == 0) {
+            return 11;
         }
         return 0;
     }();
@@ -488,6 +491,99 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
         }
         else {
             run_current(key, ret, key_len);
+        }
+        return;
+    }
+
+    if (research_mode == 11) {
+        /*
+         * Research prototype: online locality routing.
+         *
+         * The selector deliberately avoids a pre-scan of the query values.
+         * It uses ndarray metadata as a free eligibility gate, then observes
+         * a few insertion positions that the current search has already
+         * computed.  Those positions are the quantity that actually matters
+         * for locality.  Parameters remain research knobs: this experiment
+         * validates the mechanism and broad workload coverage; it does not
+         * claim these constants are globally optimal for every dtype/data
+         * distribution.
+         */
+        const npy_intp block = env_intp(
+                "NPY_SS_ONLINE_BLOCK", 512, 32, 16384);
+        const npy_intp observations = env_intp(
+                "NPY_SS_ONLINE_OBS", 8, 2, 64);
+        const npy_intp max_inversions = env_intp(
+                "NPY_SS_ONLINE_INV", 0, 0, 8);
+
+        /*
+         * Metadata-only conservative gate.  Typed dispatch already tells us
+         * this is a primitive numeric loop; sorter calls use argbinsearch and
+         * never reach this function.  SearchSorted has also materialized the
+         * key array as native, aligned C-contiguous storage before dispatch.
+         */
+        if (key_len < block * 2 || key_str != (npy_intp)sizeof(T) ||
+                arr_str != (npy_intp)sizeof(T) ||
+                key_arr == nullptr || arr_arr == nullptr) {
+            run_current(key, ret, key_len);
+            return;
+        }
+
+        auto observed_locality =
+                [&](char *rets, npy_intp count) -> bool {
+            if (count < 2) {
+                return false;
+            }
+            const npy_intp checks =
+                    (observations < count - 1) ? observations : count - 1;
+            npy_intp inversions = 0;
+            npy_intp prev_i = 0;
+            npy_intp prev =
+                    *(npy_intp *)(rets + prev_i * ret_str);
+
+            for (npy_intp j = 1; j <= checks; ++j) {
+                npy_intp i = (j * (count - 1)) / checks;
+                if (i <= prev_i) {
+                    i = prev_i + 1;
+                }
+                if (i >= count) {
+                    i = count - 1;
+                }
+                const npy_intp pos =
+                        *(npy_intp *)(rets + i * ret_str);
+                if (pos < prev) {
+                    ++inversions;
+                    if (inversions > max_inversions) {
+                        return false;
+                    }
+                }
+                prev = pos;
+                prev_i = i;
+            }
+            return true;
+        };
+
+        bool use_local = false;
+        for (npy_intp offset = 0; offset < key_len; offset += block) {
+            const npy_intp remaining = key_len - offset;
+            const npy_intp count =
+                    (remaining < block) ? remaining : block;
+            const char *block_keys = key + offset * key_str;
+            char *block_rets = ret + offset * ret_str;
+
+            if (use_local) {
+                run_galloping(block_keys, block_rets, count);
+            }
+            else {
+                run_current(block_keys, block_rets, count);
+            }
+
+            /*
+             * Hysteresis is intentionally one-block conservative: locality
+             * must be demonstrated by completed output before the next block
+             * can use the specialized path, and one failed observation
+             * immediately returns execution to the current batched path.
+             */
+            use_local = observed_locality(block_rets, count);
         }
         return;
     }
