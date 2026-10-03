@@ -131,7 +131,10 @@ def main() -> None:
                     "dense", "medium", "mostly_monotonic", "random",
                     "block_sorted", "reversal_bursts", "duplicates",
                 ):
-                    queries = make_queries(n, q, shape, dtype)
+                    try:
+                        queries = make_queries(n, q, shape, dtype)
+                    except ValueError:
+                        continue
                     for layout in ("1d", "2d"):
                         if layout == "2d":
                             rows_count = 8 if q % 8 == 0 else 10
