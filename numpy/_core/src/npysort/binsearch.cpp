@@ -1152,11 +1152,12 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
          */
         const npy_intp observations = env_intp(
                 "NPY_SS_COARSE_OBS", 16, 2, 64);
-        npy_intp activate_q = 0;
-        if (research_policy == 5) {
+        npy_intp activate_q = env_intp(
+                "NPY_SS_ACTIVATE_Q", 0, 0, 100000000);
+        if (activate_q == 0 && research_policy == 5) {
             activate_q = 2048;
         }
-        else if (research_policy == 6) {
+        else if (activate_q == 0 && research_policy == 6) {
             activate_q = 8192;
         }
 
