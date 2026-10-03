@@ -124,6 +124,13 @@ def suite_cases() -> tuple[tuple[int, ...], tuple[int, ...], tuple[str, ...], tu
             ("dense", "medium", "mostly_monotonic", "random", "alternating", "duplicates"),
             (np.dtype("int64"),),
         )
+    if SUITE == "adaptive_stress":
+        return (
+            (10_000_000, 100_000_000),
+            (100_000, 1_000_000),
+            ("dense", "medium", "sparse", "mostly_monotonic", "random", "block_sorted", "reversal_bursts"),
+            (np.dtype("int32"),),
+        )
     if SUITE == "tiny":
         return (
             (10_000, 1_000_000),
