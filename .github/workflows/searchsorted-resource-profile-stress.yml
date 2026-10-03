@@ -1,0 +1,118 @@
+name: searchsorted resource-profile stress matrix
+
+on:
+  push:
+    branches:
+      - research/searchsorted-selector-tournament
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: micro-1vcpu-2gb
+            cpus: 1
+            mem_kb: 2097152
+          - profile: small-2vcpu-4gb
+            cpus: 2
+            mem_kb: 4194304
+          - profile: standard-4vcpu-8gb
+            cpus: 4
+            mem_kb: 8388608
+          - profile: standard-4vcpu-14gb
+            cpus: 4
+            mem_kb: 14680064
+
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      SEARCHSORTED_TOURNAMENT_SUITE: adaptive_stress
+      PROFILE_NAME: ${{ matrix.profile }}
+      PROFILE_CPUS: ${{ matrix.cpus }}
+      PROFILE_MEM_KB: ${{ matrix.mem_kb }}
+
+    steps:
+      - name: Checkout research branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          ref: research/searchsorted-selector-tournament
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Record physical and logical profile
+        run: |
+          mkdir -p stress-results
+          {
+            echo "profile=$PROFILE_NAME"
+            echo "logical_cpus=$PROFILE_CPUS"
+            echo "logical_mem_kb=$PROFILE_MEM_KB"
+            echo "host_cpu=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | xargs)"
+            echo "host_nproc=$(nproc)"
+            echo "host_mem_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')"
+            echo "python=$(python --version 2>&1)"
+          } | tee stress-results/runner-metadata.txt
+
+      - name: Build one research wheel
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          mkdir -p "$RUNNER_TEMP/wheels"
+          python -m pip wheel . -w "$RUNNER_TEMP/wheels"
+
+      - name: Create benchmark environment
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install "$RUNNER_TEMP"/wheels/numpy-*.whl
+
+      - name: Run resource-profile policy matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          BENCH=benchmarks/benchmarks/searchsorted_selector_tournament.py
+          SUITE="$SEARCHSORTED_TOURNAMENT_SUITE"
+          CPULIST="0-$((PROFILE_CPUS-1))"
+
+          run_case () {
+            local label="$1"
+            shift
+            (
+              ulimit -v "$PROFILE_MEM_KB"
+              taskset -c "$CPULIST" env "$@"                 SEARCHSORTED_TOURNAMENT_OUT="stress-results/$label-$SUITE.json"                 "$RUNNER_TEMP/venv/bin/python" "$BENCH"
+            )
+          }
+
+          run_case current-before NPY_SEARCHSORTED_RESEARCH_MODE=current
+
+          run_case galloping NPY_SEARCHSORTED_RESEARCH_MODE=galloping
+          run_case sample16 NPY_SEARCHSORTED_RESEARCH_MODE=hybrid_sample16
+          run_case chunk16 NPY_SEARCHSORTED_RESEARCH_MODE=hybrid_chunk NPY_SEARCHSORTED_RESEARCH_CHUNK=16
+
+          for POLICY in 0 1 2 3 4 5 6 7
+          do
+            run_case "adaptive_p$POLICY"               NPY_SEARCHSORTED_RESEARCH_MODE=adaptive               NPY_SEARCHSORTED_RESEARCH_POLICY="$POLICY"
+          done
+
+          run_case current-after NPY_SEARCHSORTED_RESEARCH_MODE=current
+
+      - name: Summarize same-runner ratios
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/venv/bin/python"             benchmarks/benchmarks/searchsorted_selector_analyze.py             stress-results "$SEARCHSORTED_TOURNAMENT_SUITE"             | tee "stress-results/console-summary.txt"
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: searchsorted-stress-${{ matrix.profile }}
+          path: stress-results/
