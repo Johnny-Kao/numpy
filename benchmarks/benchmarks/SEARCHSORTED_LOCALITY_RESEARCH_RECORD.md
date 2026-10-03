@@ -895,3 +895,99 @@ Current expected upstream positioning if successful:
 > A conservative locality-aware fast path for primitive typed `searchsorted` that reuses state already produced by the existing batched binary search, leaves ambiguous/general workloads on the current implementation, and avoids any separate query pre-scan.
 
 No upstream PR has been opened. User signoff remains required before submission.
+
+
+## 26. Focused strict roughness result — freeze gate not yet met
+
+Run:
+`37129876085`
+
+Status:
+- micro-1vcpu-2gb: success
+- small-2vcpu-4gb: success
+- standard-4vcpu-8gb: success
+- standard-4vcpu-14gb: success
+
+Matrix:
+- coarse levels: 3 / 4
+- observations: 8 / 16 / 32
+- roughness factor: fixed at 1
+- broad workload suite unchanged
+
+### Representative results
+
+#### 1 vCPU / 2 GiB
+Best balanced level-4 settings:
+- l4/o16 random: median-like ~1.003x, worst summarized ~1.109x
+- l4/o32 random: ~1.010x, worst ~1.145x
+- dense: ~0.355-0.359x
+- duplicates: ~0.320-0.330x
+- medium: ~0.651-0.661x
+- mostly-monotonic: ~0.412-0.413x
+
+#### 2 vCPU / 4 GiB
+- l4/o32 random: ~1.014x, worst ~1.103x
+- l3/o16 random: ~1.007x, worst ~1.210x
+- locality shapes remain strongly faster.
+
+#### 4 vCPU / 8 GiB
+- l4/o16 random: ~1.055x, worst ~1.080x
+- l4/o32 random: ~1.058x, worst ~1.085x
+- dense ~0.319x
+- duplicates ~0.291-0.292x
+- medium ~0.527-0.529x
+- mostly-monotonic ~0.378-0.379x
+
+#### 4 vCPU / 14 GiB
+- l3/o16 random: ~1.033x, worst ~1.095x
+- l4/o16 random: ~1.055x, worst ~1.357x
+- l4/o32 random: ~1.059x, worst ~1.339x
+- locality shapes remain strongly faster.
+
+Baseline before/after median drift remained near 1.0 on all four profiles.
+
+### Interpretation
+
+Increasing observations from 8 to 16/32 helps some random false-positive tails, but it does **not** eliminate them consistently across profiles.
+
+There is no single tested (levels, observations) pair that simultaneously delivers:
+
+- random median near current;
+- random worst/tails consistently inside the desired <=5-10% envelope;
+- strong locality gains;
+- stability across all four logical resource profiles.
+
+Therefore the selector architecture is **not frozen yet**.
+
+What this run rules out:
+
+- simply increasing coarse sample count is not sufficient by itself;
+- further blind observation-count sweeps are unlikely to solve the residual problem.
+
+What remains true:
+
+- coarse-state piggybacking is still the strongest architecture tested;
+- selector arithmetic cost is low enough;
+- the remaining issue is false-positive classification on specific random distributions / profiles, not the basic reuse-of-current-state idea.
+
+### Next step
+
+Do not broaden parameter search.
+
+Instead identify the exact random cases that generate the worst tails, and compare their coarse-state signatures against correctly rejected random cases.
+
+The next discriminator should be derived from those false positives only.
+
+Candidate structural signals to inspect without another query pass:
+
+1. number of distinct coarse buckets among sampled bases;
+2. zero-step / tie fraction;
+3. span occupancy: distinct buckets relative to reachable coarse buckets;
+4. direction consistency plus bucket entropy / concentration;
+5. possibly require both strict no-backtracking and a minimum amount of observed forward progress.
+
+The goal is a conservative precision gate:
+
+> if evidence is not strongly local, stay on current.
+
+No upstream PR should be prepared until the false-positive tail mechanism is understood and bounded.
