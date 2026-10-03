@@ -1448,3 +1448,48 @@ The next conclusion must come from this implementation tournament:
 4. if the tax reaches near-current behavior, freeze the selector implementation and move to the production-shaped local finisher that resumes from existing coarse bounds.
 
 No upstream PR without contributor signoff.
+
+
+## 32. Production activation decision — portable default frozen
+
+Date: 2026-10-04 JST
+
+Run: https://github.com/Johnny-Kao/numpy/actions/runs/37147552873
+
+### Decision
+
+For the first production-shaped implementation, use a conservative cross-platform activation gate:
+
+```text
+Q < 2048   -> untouched current batched binary search
+Q >= 2048  -> near-free P0 coarse selector
+```
+
+The selector mechanism itself remains the validated strict P0 structural test implemented with the low-cost fixed-sample/reversal form. Random/general fallback continues from already-computed coarse bounds; strong-locality cases route to the specialized local finisher.
+
+### Why 2048, not a hardware-specific threshold
+
+The activation crossover is measurably hardware-dependent.
+
+In this run, AMD EPYC profiles tolerated activation as low as Q=64 while preserving near-current random/general performance and strong locality speedups. The Intel Xeon Platinum 8573C profile required a materially larger Q before the selector tax approached the same envelope; Q=1024 was close but retained a somewhat higher p95 tail than the conservative production gate.
+
+Therefore Q=2048 is intentionally a **portable conservative default**, not a claim of a globally optimal threshold.
+
+### Explicit optimization note
+
+There is further optimization headroom in this constant.
+
+The AMD/Intel divergence indicates that the optimal activation point depends on lower-level hardware/code-generation characteristics. A future improvement may replace or refine the fixed Q threshold with an architecture-neutral, already-available cost signal, or may justify a lower portable threshold with broader validation.
+
+Do **not** introduce CPU-model-specific tuning in the initial production patch.
+
+### Research status
+
+The selector-policy research is closed for this optimization:
+- P0 strict classification is retained.
+- P1-P4 are rejected as unnecessary complexity.
+- near-free implementation tax is sufficiently small for large-enough Q.
+- Q>=2048 is the conservative portable activation rule.
+- remaining work is production shaping, correctness/CI validation, and the local finisher that resumes from existing coarse bounds.
+
+No upstream PR without contributor signoff.
