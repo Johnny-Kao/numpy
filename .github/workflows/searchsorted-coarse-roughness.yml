@@ -1,0 +1,136 @@
+name: searchsorted coarse roughness matrix
+
+on:
+  push:
+    branches:
+      - research/searchsorted-selector-tournament
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  coarse-roughness:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: micro-1vcpu-2gb
+            cpus: 1
+            mem_kb: 2097152
+          - profile: small-2vcpu-4gb
+            cpus: 2
+            mem_kb: 4194304
+          - profile: standard-4vcpu-8gb
+            cpus: 4
+            mem_kb: 8388608
+          - profile: standard-4vcpu-14gb
+            cpus: 4
+            mem_kb: 14680064
+
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      SEARCHSORTED_TOURNAMENT_SUITE: online_broad
+      PROFILE_NAME: ${{ matrix.profile }}
+      PROFILE_CPUS: ${{ matrix.cpus }}
+      PROFILE_MEM_KB: ${{ matrix.mem_kb }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          ref: research/searchsorted-selector-tournament
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Record runner metadata
+        run: |
+          mkdir -p roughness-results
+          {
+            echo "profile=$PROFILE_NAME"
+            echo "logical_cpus=$PROFILE_CPUS"
+            echo "logical_mem_kb=$PROFILE_MEM_KB"
+            echo "host_cpu=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | xargs)"
+            echo "host_nproc=$(nproc)"
+            echo "host_mem_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')"
+          } | tee roughness-results/runner-metadata.txt
+
+      - name: Build one research wheel
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          mkdir -p "$RUNNER_TEMP/wheels"
+          python -m pip wheel . -w "$RUNNER_TEMP/wheels"
+
+      - name: Create benchmark environment
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install "$RUNNER_TEMP"/wheels/numpy-*.whl
+
+      - name: Run coarse roughness matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          BENCH=benchmarks/benchmarks/searchsorted_selector_tournament.py
+          SUITE="$SEARCHSORTED_TOURNAMENT_SUITE"
+          CPULIST="0-$((PROFILE_CPUS-1))"
+
+          run_case () {
+            local label="$1"
+            shift
+            (
+              ulimit -v "$PROFILE_MEM_KB"
+              taskset -c "$CPULIST" env "$@" \
+                SEARCHSORTED_TOURNAMENT_OUT="roughness-results/$label-$SUITE.json" \
+                "$RUNNER_TEMP/venv/bin/python" "$BENCH"
+            )
+          }
+
+          run_current () {
+            local label="$1"
+            run_case "$label" \
+              NPY_SEARCHSORTED_RESEARCH_MODE=current \
+              NPY_SEARCHSORTED_RESEARCH_LABEL="$label"
+          }
+
+          run_current current-before
+
+          idx=0
+          for levels in 3 4 5; do
+            for obs in 4 8; do
+              for factor in 1 2; do
+                label=$(printf "c%02d_l%s_o%s_f%s" "$idx" "$levels" "$obs" "$factor")
+                run_case "$label" \
+                  NPY_SEARCHSORTED_RESEARCH_MODE=coarse_roughness \
+                  NPY_SEARCHSORTED_RESEARCH_LABEL="$label" \
+                  NPY_SS_COARSE_LEVELS="$levels" \
+                  NPY_SS_COARSE_OBS="$obs" \
+                  NPY_SS_ROUGHNESS_FACTOR="$factor"
+                idx=$((idx+1))
+                if [[ "$idx" -eq 6 ]]; then
+                  run_current current-mid
+                fi
+              done
+            done
+          done
+
+          run_current current-after
+
+      - name: Summarize normalized ratios
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/venv/bin/python" \
+            benchmarks/benchmarks/searchsorted_selector_analyze.py \
+            roughness-results "$SEARCHSORTED_TOURNAMENT_SUITE" \
+            | tee roughness-results/console-summary.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: searchsorted-roughness-${{ matrix.profile }}
+          path: roughness-results/
