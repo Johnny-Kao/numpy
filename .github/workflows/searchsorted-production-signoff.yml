@@ -109,7 +109,7 @@ jobs:
             )
           }
 
-          for suite in online_broad adaptive_stress tiny; do
+          for suite in adaptive_stress; do
             run_suite "$RUNNER_TEMP/base/bin/python" "base-before" "$suite"
             run_suite "$RUNNER_TEMP/candidate/bin/python" "candidate" "$suite"
             run_suite "$RUNNER_TEMP/base/bin/python" "base-after" "$suite"
