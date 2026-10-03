@@ -141,6 +141,14 @@ def suite_cases() -> tuple[tuple[int, ...], tuple[int, ...], tuple[str, ...], tu
             ("dense", "medium", "sparse", "mostly_monotonic", "random", "block_sorted", "reversal_bursts"),
             (np.dtype("int32"),),
         )
+    if SUITE == "online_broad":
+        return (
+            (1_000_000, 10_000_000),
+            (1_024, 8_192, 100_000),
+            ("dense", "medium", "mostly_monotonic", "random",
+             "block_sorted", "reversal_bursts", "duplicates"),
+            (np.dtype("int32"), np.dtype("int64"), np.dtype("float64")),
+        )
     if SUITE == "tiny":
         return (
             (10_000, 1_000_000),
@@ -208,6 +216,7 @@ def measure(arr: np.ndarray, queries: np.ndarray, side: str) -> dict[str, float 
 def main() -> None:
     ns, qs, shapes, dtypes = suite_cases()
     rows: list[dict[str, object]] = []
+    layouts = ("1d", "2d") if SUITE == "online_broad" else ("1d",)
 
     for dtype in dtypes:
         for n in ns:
@@ -215,26 +224,33 @@ def main() -> None:
             for q in qs:
                 for shape in shapes:
                     try:
-                        queries = make_queries(n, q, shape, dtype)
+                        base_queries = make_queries(n, q, shape, dtype)
                     except ValueError:
                         continue
-                    for side in ("left", "right"):
-                        result = measure(arr, queries, side)
-                        rows.append(
-                            {
-                                "mode": MODE,
-                                "chunk": CHUNK,
-                                "policy": POLICY,
-                                "label": LABEL,
-                                "suite": SUITE,
-                                "dtype": dtype.name,
-                                "n": n,
-                                "q": q,
-                                "shape": shape,
-                                "side": side,
-                                **result,
-                            }
-                        )
+                    for layout in layouts:
+                        if layout == "2d":
+                            rows_count = 8 if q % 8 == 0 else 10
+                            queries = base_queries.reshape(rows_count, q // rows_count)
+                        else:
+                            queries = base_queries
+                        for side in ("left", "right"):
+                            result = measure(arr, queries, side)
+                            rows.append(
+                                {
+                                    "mode": MODE,
+                                    "chunk": CHUNK,
+                                    "policy": POLICY,
+                                    "label": LABEL,
+                                    "suite": SUITE,
+                                    "dtype": dtype.name,
+                                    "n": n,
+                                    "q": q,
+                                    "shape": shape,
+                                    "layout": layout,
+                                    "side": side,
+                                    **result,
+                                }
+                            )
 
     payload = {
         "mode": MODE,
