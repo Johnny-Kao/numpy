@@ -1,18 +1,18 @@
 name: searchsorted production signoff
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - research/searchsorted-selector-tournament
     paths:
       - .github/workflows/searchsorted-production-signoff.yml
-  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: searchsorted-production-signoff-${{ github.ref }}
+  group: searchsorted-production-signoff-final
   cancel-in-progress: true
 
 jobs:
@@ -42,7 +42,8 @@ jobs:
       PROFILE_CPUS: ${{ matrix.cpus }}
       PROFILE_MEM_KB: ${{ matrix.mem_kb }}
       BASE_SHA: 2f1eca306857b641fb0fef0ab854a2d4137e1581
-      CANDIDATE_REF: perf/searchsorted-locality-selector
+      CANDIDATE_SHA: fb28dba5eb01bc97f4734ccb37921386db643890
+      ACTIVATE_Q: "131072"
 
     steps:
       - uses: actions/checkout@v4
@@ -65,24 +66,34 @@ jobs:
             echo "host_cpu=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | xargs)"
             echo "host_nproc=$(nproc)"
             echo "host_mem_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')"
+            echo "base_sha=$BASE_SHA"
+            echo "candidate_sha=$CANDIDATE_SHA"
+            echo "activation_q=$ACTIVATE_Q"
           } | tee signoff-results/runner-metadata.txt
 
       - name: Preserve benchmark harness
+        run: cp benchmarks/benchmarks/searchsorted_selector_tournament.py "$RUNNER_TEMP/bench.py"
+
+      - name: Final delta sanity
         run: |
-          cp benchmarks/benchmarks/searchsorted_selector_tournament.py "$RUNNER_TEMP/bench.py"
+          set -euo pipefail
+          git fetch origin "$CANDIDATE_SHA"
+          git diff --check "$BASE_SHA...$CANDIDATE_SHA"
+          git diff --name-only "$BASE_SHA...$CANDIDATE_SHA" | tee signoff-results/changed-files.txt
+          test "$(git diff --name-only "$BASE_SHA...$CANDIDATE_SHA")" = "numpy/_core/src/npysort/binsearch.cpp"
+          git diff --stat "$BASE_SHA...$CANDIDATE_SHA" | tee signoff-results/diff-stat.txt
 
       - name: Build base and candidate wheels
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          git fetch origin "$CANDIDATE_REF"
           mkdir -p "$RUNNER_TEMP/base-wheels" "$RUNNER_TEMP/candidate-wheels"
 
           git checkout --detach "$BASE_SHA"
           git submodule update --init --recursive
           python -m pip wheel . -w "$RUNNER_TEMP/base-wheels"
 
-          git checkout "$CANDIDATE_REF"
+          git checkout --detach "$CANDIDATE_SHA"
           git submodule update --init --recursive
           python -m pip wheel . -w "$RUNNER_TEMP/candidate-wheels"
 
@@ -92,8 +103,39 @@ jobs:
           python -m venv "$RUNNER_TEMP/candidate"
           "$RUNNER_TEMP/base/bin/pip" install "$RUNNER_TEMP"/base-wheels/numpy-*.whl
           "$RUNNER_TEMP/candidate/bin/pip" install "$RUNNER_TEMP"/candidate-wheels/numpy-*.whl
+          "$RUNNER_TEMP/candidate/bin/pip" install pytest hypothesis
 
-      - name: Run correctness and performance signoff
+      - name: Verify installed candidate provenance
+        run: |
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/candidate/bin/python" - <<'PY' | tee "$GITHUB_WORKSPACE/signoff-results/candidate-provenance.txt"
+          import numpy, pathlib
+          print("numpy_version=", numpy.__version__)
+          print("numpy_file=", pathlib.Path(numpy.__file__).resolve())
+          print("core_file=", pathlib.Path(numpy._core.__file__).resolve())
+          PY
+
+      - name: Focused NumPy searchsorted tests
+        run: |
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/candidate/bin/python" -m pytest --pyargs numpy._core.tests.test_multiarray -k searchsorted -q \
+            | tee "$GITHUB_WORKSPACE/signoff-results/focused-tests.txt"
+
+      - name: Record binary-size cost
+        run: |
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/base/bin/python" - <<'PY' > "$GITHUB_WORKSPACE/signoff-results/base-binary-size.txt"
+          import numpy._core._multiarray_umath as m, os
+          print(m.__file__)
+          print(os.path.getsize(m.__file__))
+          PY
+          "$RUNNER_TEMP/candidate/bin/python" - <<'PY' > "$GITHUB_WORKSPACE/signoff-results/candidate-binary-size.txt"
+          import numpy._core._multiarray_umath as m, os
+          print(m.__file__)
+          print(os.path.getsize(m.__file__))
+          PY
+
+      - name: Run final correctness and performance matrix
         shell: bash
         run: |
           set -euo pipefail
@@ -102,65 +144,127 @@ jobs:
           run_suite () {
             local py="$1"
             local label="$2"
-            local suite="$3"
             (
               ulimit -v "$PROFILE_MEM_KB"
-              taskset -c "$CPULIST" env                 SEARCHSORTED_TOURNAMENT_SUITE="$suite"                 SEARCHSORTED_TOURNAMENT_OUT="signoff-results/$label-$suite.json"                 NPY_SEARCHSORTED_RESEARCH_LABEL="$label"                 NPY_SEARCHSORTED_RESEARCH_MODE=current                 "$py" "$RUNNER_TEMP/bench.py"
+              taskset -c "$CPULIST" env \
+                SEARCHSORTED_TOURNAMENT_SUITE=production_final \
+                SEARCHSORTED_TOURNAMENT_OUT="signoff-results/$label-production_final.json" \
+                NPY_SEARCHSORTED_RESEARCH_LABEL="$label" \
+                NPY_SEARCHSORTED_RESEARCH_MODE=current \
+                "$py" "$RUNNER_TEMP/bench.py"
             )
           }
 
-          for suite in adaptive_stress; do
-            run_suite "$RUNNER_TEMP/base/bin/python" "base-before" "$suite"
-            run_suite "$RUNNER_TEMP/candidate/bin/python" "candidate" "$suite"
-            run_suite "$RUNNER_TEMP/base/bin/python" "base-after" "$suite"
-          done
+          run_suite "$RUNNER_TEMP/base/bin/python" "base-before"
+          run_suite "$RUNNER_TEMP/candidate/bin/python" "candidate"
+          run_suite "$RUNNER_TEMP/base/bin/python" "base-after"
 
-      - name: Analyze signoff
+      - name: Analyze final signoff
         run: |
           "$RUNNER_TEMP/candidate/bin/python" - <<'PY'
           import json, statistics
+          from collections import defaultdict
           from pathlib import Path
 
-          root=Path("signoff-results")
-          suites=("online_broad","adaptive_stress","tiny")
-          keys=("dtype","n","q","shape","layout","side")
-          local={"dense","medium","mostly_monotonic","duplicates"}
+          root = Path("signoff-results")
+          gate = 131072
+          keys = ("dtype", "n", "q", "shape", "layout", "side")
+          local_shapes = {"dense", "medium", "mostly_monotonic", "duplicates"}
 
-          out={}
-          for suite in suites:
-              def rows(label):
-                  return json.loads((root/f"{label}-{suite}.json").read_text())["rows"]
-              b1={tuple(r[k] for k in keys):r["median_ns"] for r in rows("base-before")}
-              b2={tuple(r[k] for k in keys):r["median_ns"] for r in rows("base-after")}
-              base={k:statistics.median((b1[k],b2[k])) for k in b1.keys() & b2.keys()}
-              ratios=[]; rnd=[]; loc=[]; below=[]
-              for r in rows("candidate"):
-                  k=tuple(r[x] for x in keys)
-                  if k not in base: continue
-                  x=r["median_ns"]/base[k]
-                  ratios.append(x)
-                  if r["shape"]=="random": rnd.append(x)
-                  if r["shape"] in local: loc.append(x)
-                  if int(r["q"]) < 2048: below.append(x)
-              def p95(xs):
-                  ys=sorted(xs)
-                  return ys[min(len(ys)-1, round((len(ys)-1)*.95))] if ys else None
-              out[suite]={
-                  "cases":len(ratios),
-                  "overall_median":statistics.median(ratios),
-                  "random_median":statistics.median(rnd) if rnd else None,
-                  "random_p95":p95(rnd),
-                  "random_worst":max(rnd) if rnd else None,
-                  "local_median":statistics.median(loc) if loc else None,
-                  "local_p95":p95(loc),
-                  "below_gate_median":statistics.median(below) if below else None,
+          def rows(label):
+              return json.loads((root/f"{label}-production_final.json").read_text())["rows"]
+
+          b1_rows = rows("base-before")
+          b2_rows = rows("base-after")
+          cand_rows = rows("candidate")
+          b1 = {tuple(r[k] for k in keys): r["median_ns"] for r in b1_rows}
+          b2 = {tuple(r[k] for k in keys): r["median_ns"] for r in b2_rows}
+          base = {k: statistics.median((b1[k], b2[k])) for k in b1.keys() & b2.keys()}
+
+          records = []
+          for r in cand_rows:
+              k = tuple(r[x] for x in keys)
+              if k not in base:
+                  continue
+              ratio = r["median_ns"] / base[k]
+              q = int(r["q"])
+              records.append({
+                  **{x: r[x] for x in keys},
+                  "ratio": ratio,
+                  "speedup": 1.0 / ratio,
+                  "runtime_change_pct": (ratio - 1.0) * 100.0,
+                  "active": q >= gate,
+                  "is_local": r["shape"] in local_shapes,
+                  "is_random": r["shape"] == "random",
+              })
+
+          def pctl(xs, p):
+              if not xs:
+                  return None
+              ys = sorted(xs)
+              return ys[min(len(ys)-1, round((len(ys)-1)*p))]
+
+          def stats(rs):
+              xs = [r["ratio"] for r in rs]
+              return {
+                  "cases": len(xs),
+                  "ratio_median": statistics.median(xs) if xs else None,
+                  "ratio_p95": pctl(xs, .95),
+                  "ratio_worst": max(xs) if xs else None,
+                  "speedup_median": (1/statistics.median(xs)) if xs else None,
+                  "runtime_reduction_median_pct": ((1-statistics.median(xs))*100) if xs else None,
               }
-          (root/"summary.json").write_text(json.dumps(out,indent=2))
-          print(json.dumps(out,indent=2))
+
+          groups = {
+              "all": records,
+              "below_gate_all": [r for r in records if not r["active"]],
+              "active_all": [r for r in records if r["active"]],
+              "active_random": [r for r in records if r["active"] and r["is_random"]],
+              "active_local": [r for r in records if r["active"] and r["is_local"]],
+              "active_other_fallback": [r for r in records if r["active"] and not r["is_local"] and not r["is_random"]],
+          }
+
+          by_q = {}
+          for q in sorted({int(r["q"]) for r in records}):
+              qrows = [r for r in records if int(r["q"]) == q]
+              by_q[str(q)] = {
+                  "all": stats(qrows),
+                  "random": stats([r for r in qrows if r["is_random"]]),
+                  "local": stats([r for r in qrows if r["is_local"]]),
+              }
+
+          drift = [b2[k]/b1[k] for k in b1.keys() & b2.keys()]
+          summary = {
+              "activation_q": gate,
+              "groups": {name: stats(rs) for name, rs in groups.items()},
+              "by_q": by_q,
+              "baseline_drift": {
+                  "ratio_median": statistics.median(drift),
+                  "ratio_p95": pctl(drift, .95),
+                  "ratio_worst": max(drift),
+                  "ratio_best": min(drift),
+              },
+          }
+
+          def read_size(path):
+              lines = Path(path).read_text().strip().splitlines()
+              return int(lines[-1])
+          bs = read_size(root/"base-binary-size.txt")
+          cs = read_size(root/"candidate-binary-size.txt")
+          summary["binary_size"] = {
+              "base_bytes": bs,
+              "candidate_bytes": cs,
+              "delta_bytes": cs-bs,
+              "delta_pct": (cs/bs-1)*100,
+          }
+
+          (root/"summary.json").write_text(json.dumps(summary, indent=2))
+          (root/"case-ratios.json").write_text(json.dumps(records, indent=2))
+          print(json.dumps(summary, indent=2))
           PY
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: searchsorted-production-signoff-${{ matrix.profile }}
+          name: searchsorted-final-signoff-${{ matrix.profile }}
           path: signoff-results/
