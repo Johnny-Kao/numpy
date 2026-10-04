@@ -142,6 +142,13 @@ def suite_cases() -> tuple[tuple[int, ...], tuple[int, ...], tuple[str, ...], tu
              "duplicates", "reversal_bursts"),
             (np.dtype("int32"), np.dtype("int64"), np.dtype("float64")),
         )
+    if SUITE == "production_gate_final":
+        return (
+            (10_000_000,),
+            (1_048_575, 1_048_576, 2_000_000),
+            ("dense", "random", "duplicates", "reversal_bursts"),
+            (np.dtype("int32"), np.dtype("int64"), np.dtype("float64")),
+        )
     if SUITE == "adaptive_fine":
         return (
             (10_000_000, 100_000_000),
