@@ -1567,3 +1567,160 @@ Therefore Q>=2048 is frozen as the initial portable default, not a globally opti
 Research is closed. Clean production candidate and maintainer-facing draft are ready for review.
 
 Do not open the upstream PR without explicit user signoff.
+
+
+## 34. OSS Toolkit PR sign-off — final current-HEAD run found codegen/fallback cost
+
+Date: 2026-10-04 JST
+
+Production candidate:
+- branch: `perf/searchsorted-locality-selector`
+- candidate HEAD: `fb28dba5eb01bc97f4734ccb37921386db643890`
+- upstream base: `2f1eca306857b641fb0fef0ab854a2d4137e1581`
+- production activation gate: `Q >= 131072`
+- final diff at sign-off: only `numpy/_core/src/npysort/binsearch.cpp`
+
+Final Toolkit L4/L5 sign-off run:
+https://github.com/Johnny-Kao/numpy/actions/runs/37172716011
+
+Result:
+- GitHub Actions workflow: **4/4 jobs PASS**
+- Engineering sign-off decision: **REVISE**
+- Reason: final current-HEAD validation exposed a reproducible performance regression in the historical path even when the locality gate is not active, plus a small number of active-local losing cases near the gate.
+
+### Validation performed
+
+Each job:
+- pinned exact upstream base and exact candidate SHA;
+- checked `git diff --check`;
+- asserted the production diff contains only `numpy/_core/src/npysort/binsearch.cpp`;
+- built separate base/candidate wheels;
+- installed them into isolated environments;
+- verified the installed candidate provenance;
+- ran focused NumPy `searchsorted` tests;
+- measured binary-size impact;
+- ran interleaved Base-before -> Candidate -> Base-after performance validation;
+- retained raw per-case results and summary artifacts.
+
+Focused tests:
+- **21 passed, 14848 deselected** on each of the four jobs.
+
+Runner CPUs:
+- Intel Xeon Platinum 8370C
+- AMD EPYC 7763 (two logical resource profiles)
+- AMD EPYC 9V74
+
+Final production matrix:
+- N = 1M / 10M
+- Q = 100000 / 131071 / 131072 / 262144 / 1000000
+- dtype = int32 / int64 / float64
+- side = left / right
+- shapes = dense / medium / mostly-monotonic / random / duplicates / reversal-bursts
+- candidate compared against the median of same-runner Base-before and Base-after.
+
+### Positive result — active locality gain remains very large
+
+For `Q >= 131072`, active-local median Candidate/Base by runner:
+
+| Runner profile | Median ratio | Median speedup | Median runtime reduction |
+| --- | ---: | ---: | ---: |
+| Intel micro | 0.236x | 4.25x | 76.45% |
+| AMD EPYC 7763 small | 0.241x | 4.14x | 75.87% |
+| AMD EPYC 7763 standard | 0.241x | 4.14x | 75.86% |
+| AMD EPYC 9V74 standard | 0.214x | 4.67x | 78.60% |
+
+At `Q=1M`, local medians reached roughly 4.8-5.7x speedup depending on runner.
+
+So the locality mechanism itself still provides a very large production-shaped benefit.
+
+### Active random/general cost
+
+For active random cases (`Q >= 131072`):
+
+| Runner profile | Median ratio | p95 | Worst |
+| --- | ---: | ---: | ---: |
+| Intel micro | 1.003x | 1.093x | 1.315x |
+| AMD EPYC 7763 small | 0.936x | 1.018x | 1.025x |
+| AMD EPYC 7763 standard | 0.984x | 1.065x | 1.140x |
+| AMD EPYC 9V74 standard | 0.931x | 1.039x | 1.063x |
+
+Some worst active-random tails coincide with substantial Base-before/Base-after drift and should not be interpreted as pure candidate overhead. However stable cases still show several ~5-9% regressions, so the non-target cost is not universally zero.
+
+### Critical finding — below-gate path is not performance-identical
+
+Although `Q < 131072` never enters the selector logically, the enlarged/restructured `binsearch` body changes compiler/code-generation behavior.
+
+A particularly clean reproduced case:
+
+- CPU: AMD EPYC 7763
+- dtype: float64
+- N = 1,000,000
+- Q = 100,000 (< gate)
+- shape: duplicates
+- side: left
+- Base-before: ~2.783 ms
+- Candidate: ~3.576 ms
+- Base-after: ~2.787 ms
+- Candidate/Base: **1.284x**
+- Base-after/Base-before drift: ~0.15%
+
+This is a real ~28% regression with a stable baseline, not runner noise.
+
+Similar ~27-28% below-gate regressions appear on related AMD float64/left cases at Q=100000 and Q=131071.
+
+Therefore the statement "below-gate performance is untouched" is not currently valid at machine-code level even though the semantic branch does not activate.
+
+### Active-local losing boundary cases
+
+The final matrix also found two reproducible active-local losses near the gate:
+
+- AMD EPYC 7763
+- float64
+- N = 1M
+- Q = 131072
+- duplicates
+- side = left
+- Candidate/Base ~= **1.103-1.104x**
+- Base-before/Base-after drift < 0.5%
+
+So strong locality is highly beneficial in aggregate, but the current production path does **not** yet satisfy a strict "routed local cases never regress" claim.
+
+### Resource / binary-size cost
+
+No new query pre-scan, O(Q) temporary allocation, persistent cache, thread, or shared mutable state is introduced by the production code.
+
+Compiled `_multiarray_umath` size:
+- base: 11,041,288 bytes
+- candidate: 11,147,784 bytes
+- delta: **+106,496 bytes (+0.965%)**
+
+This is the concrete binary-size cost of the current implementation.
+
+### Toolkit gate result
+
+L4:
+- correctness/focused tests: PASS
+- build/provenance: PASS
+- diff scope: PASS
+- safety/state surface: PASS by design review (no new shared state/allocation/thread)
+- performance/resource: **REVISE**
+- future-risk note: threshold/crossover documentation present in production code
+
+L5 final sign-off:
+- **REVISE**
+- do not create upstream Draft PR yet.
+
+### Minimal next action
+
+Do **not** reopen selector-policy or threshold research.
+
+The shortest corrective path is to isolate the historical/current batched implementation from the locality implementation at the function/code-generation boundary so that below-gate/fallback execution does not inherit the enlarged locality body.
+
+After that structural isolation:
+1. rerun the same focused tests;
+2. rerun the same pinned final sign-off matrix;
+3. require below-gate/fallback performance to return to near-current behavior;
+4. confirm active-local gain remains material;
+5. only then re-enter L5 PR preparation.
+
+No upstream PR without contributor signoff.
