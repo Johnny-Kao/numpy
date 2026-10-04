@@ -42,7 +42,7 @@ jobs:
       PROFILE_CPUS: ${{ matrix.cpus }}
       PROFILE_MEM_KB: ${{ matrix.mem_kb }}
       BASE_SHA: 2f1eca306857b641fb0fef0ab854a2d4137e1581
-      CANDIDATE_SHA: 8a058ca3eab725843e3340936d417b3140614b89
+      CANDIDATE_SHA: 4eb09541d4f746112937c95bd58ddd3105315f08
       ACTIVATE_Q: "1048576"
 
     steps:
