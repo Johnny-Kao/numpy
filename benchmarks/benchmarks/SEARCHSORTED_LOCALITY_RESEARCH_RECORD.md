@@ -1844,3 +1844,123 @@ Then rerun only:
 4. a small set of the known below-gate float64/left regressions.
 
 If below-gate performance returns to near-current and active-region gains remain, the candidate can re-enter L5 PR preparation.
+
+
+## 36. Final code-generation isolation re-signoff — PASS
+
+Date: 2026-10-04 JST
+
+Production candidate:
+- branch: `perf/searchsorted-locality-selector`
+- candidate HEAD: `4eb09541d4f746112937c95bd58ddd3105315f08`
+- upstream base: `2f1eca306857b641fb0fef0ab854a2d4137e1581`
+- activation gate: `Q >= 2^20 = 1048576`
+- production diff: `numpy/_core/src/npysort/binsearch.cpp` only
+
+Final re-signoff run:
+https://github.com/Johnny-Kao/numpy/actions/runs/37175297044
+
+Result:
+- GitHub Actions: **4/4 jobs PASS**
+- focused `searchsorted` tests: PASS on all four jobs
+- build/install provenance: PASS
+- final diff sanity / `git diff --check`: PASS
+- engineering sign-off: **PASS**
+- upstream PR: ready for maintainer-facing draft review, but do not open without explicit user signoff
+
+### Structural fix
+
+The locality implementation and historical batched implementation are now isolated behind separate non-inlined helpers.
+
+Purpose:
+- preserve a compact historical machine-code path for below-gate/general calls;
+- prevent the much larger locality implementation from perturbing the code layout/code generation of the legacy path;
+- keep the selector policy, activation threshold, and local finisher unchanged.
+
+The outer dispatch only selects:
+- historical batched helper for below-gate/non-contiguous cases;
+- locality-aware helper for eligible `Q >= 2^20` contiguous batches.
+
+### Below-gate blocker is resolved
+
+At `Q=1,048,575`, the final four-runner summaries were:
+
+| Profile / host | Below-gate median | p95 | worst |
+| --- | ---: | ---: | ---: |
+| 1 vCPU / AMD EPYC 7763 | 1.0068x | 1.0468x | 1.0642x |
+| 2 vCPU / Intel Xeon 8573C | 0.9996x | 1.0242x | 1.0338x |
+| 4 vCPU / AMD EPYC 7763 | 1.0018x | 1.0154x | 1.0363x |
+| 4 vCPU / AMD EPYC 9V45 | 1.0022x | 1.0295x | 1.0535x |
+
+The previously problematic float64/left cases returned to near-current behavior:
+
+- AMD EPYC 7763 4-vCPU: dense 0.989x, random 0.998x, duplicates 0.973x, reversal-bursts 0.976x;
+- AMD EPYC 7763 1-vCPU: dense 0.962x, random 0.995x, duplicates 0.977x, reversal-bursts 0.967x;
+- Intel Xeon 8573C: dense 1.034x, random 1.019x, duplicates 1.015x, reversal-bursts 1.009x;
+- AMD EPYC 9V45: dense 1.017x, random 0.991x, duplicates 0.975x, reversal-bursts 1.028x.
+
+The former reproducible ~19-24% below-gate regression is no longer present.
+
+### Active-region performance remains strong
+
+For `Q >= 1,048,576`:
+
+| Profile / host | Active-random median | Active-random worst | Active-local median | Local median speedup |
+| --- | ---: | ---: | ---: | ---: |
+| 1 vCPU / AMD EPYC 7763 | 0.787x | 0.924x | 0.178x | 5.61x |
+| 2 vCPU / Intel Xeon 8573C | 0.833x | 0.945x | 0.187x | 5.33x |
+| 4 vCPU / AMD EPYC 7763 | 0.761x | 0.923x | 0.176x | 5.67x |
+| 4 vCPU / AMD EPYC 9V45 | 0.812x | 0.963x | 0.173x | 5.78x |
+
+In this final run:
+- no active-random case exceeded current;
+- active-local median runtime is ~0.173-0.187x current;
+- median locality speedup is ~**5.3-5.8x**.
+
+Do not generalize the random speedups as a universal guarantee; treat them as evidence that the final selector/fallback structure does not impose a measurable random-path penalty in this validation matrix.
+
+### Resource / binary-size cost
+
+Compiled `_multiarray_umath`:
+- base: 11,041,288 bytes
+- candidate: 11,193,128 bytes
+- delta: **+151,840 bytes (+1.375%)**
+
+Structural runtime resource cost:
+- no query pre-scan;
+- no new O(Q) temporary allocation;
+- no persistent cache/state;
+- no additional worker threads.
+
+The code-generation isolation increases binary size relative to the prior single-function candidate, but removes the below-gate hot-path regression.
+
+### Final Toolkit decision
+
+L4:
+- correctness: PASS
+- focused tests: PASS
+- build/provenance: PASS
+- diff/scope sanity: PASS
+- below-gate historical-path performance: PASS
+- active random/general cost: PASS in final matrix
+- target-locality gain: PASS
+- resource disclosure: PASS
+- future-risk/crossover note: documented
+
+L5:
+- **PASS**
+- candidate is ready for PR-body drafting / maintainer-facing review
+- do not open the upstream PR until explicit contributor signoff
+
+### Final production facts to use in PR
+
+Use the final current-HEAD evidence only:
+- production HEAD `4eb09541d4f746112937c95bd58ddd3105315f08`;
+- activation gate `Q >= 2^20`;
+- below-gate median ~1.000-1.007x across the four runners;
+- active-local median ~0.173-0.187x current (~5.3-5.8x faster);
+- active-random worst <=0.963x in this final matrix;
+- binary size +151,840 bytes (+1.375%);
+- no new O(Q) allocation, persistent state, or worker thread.
+
+Earlier larger locality speedups and rejected lower activation gates remain research history, not the final production performance claim.
