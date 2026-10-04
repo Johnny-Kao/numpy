@@ -1964,3 +1964,150 @@ Use the final current-HEAD evidence only:
 - no new O(Q) allocation, persistent state, or worker thread.
 
 Earlier larger locality speedups and rejected lower activation gates remain research history, not the final production performance claim.
+
+
+## 37. Submission closeout — upstream PR opened and marked Ready
+
+Date: 2026-10-04 JST
+
+Upstream PR:
+- https://github.com/numpy/numpy/pull/32869
+- title: `PERF: exploit insertion locality in batched searchsorted`
+- state: **OPEN / READY FOR REVIEW**
+- head: `Johnny-Kao:perf/searchsorted-locality-selector`
+- current head SHA: `9e4fda5d4b3f9c8ad155431d922b1dcb7d914d29`
+- base: `numpy/numpy:main`
+- mergeability at closeout: mergeable
+- changed production source files: 1 (`numpy/_core/src/npysort/binsearch.cpp`)
+
+The final source-comment commit after measured sign-off:
+- `9e4fda5d4b3f9c8ad155431d922b1dcb7d914d29`
+- changes documentation/comments only;
+- no compiled-code behavior changed from the measured implementation HEAD `4eb09541d4f746112937c95bd58ddd3105315f08`.
+
+### Final PR story
+
+The maintainer-facing PR body was deliberately simplified to two reading depths.
+
+Decision layer:
+1. what changes;
+2. why it is low-cost;
+3. measured benefit;
+4. hidden-cost / regression check;
+5. explicit trade-off.
+
+Evidence layer:
+- Before / After Mermaid diagrams;
+- near-zero incremental runtime-cost table;
+- code-generation-isolation explanation;
+- final performance matrix;
+- activation-gate rationale;
+- validation references.
+
+The final TL;DR states:
+- the existing batched search is preserved;
+- locality detection reuses coarse state NumPy already computes;
+- no O(Q) pre-scan/allocation, persistent state, extra thread, or GPU work is added;
+- tested strong-locality workloads are ~5.3-5.8x faster;
+- the primary measured trade-off is +1.375% compiled binary size;
+- `Q >= 2^20` is a conservative tunable portable default, not a permanent hardware boundary.
+
+### Before / After communication
+
+The final PR uses horizontal Mermaid diagrams for direct visual comparison.
+
+The After diagram highlights the added locality machinery with `#FFA028`, while the historical path remains unhighlighted. This matches the project's preferred PR communication style: reviewers should be able to identify the changed execution region visually before reading implementation detail.
+
+### Activation-gate portability note retained in production source
+
+The production source comment records that:
+- `LOCALITY_MIN_KEYS` is a tunable portable default;
+- 2026-10-04 activation experiments showed lower viable crossover on tested AMD environments and a higher crossover on the tested Intel environment;
+- lower portable production gates still exposed non-target regressions;
+- future CPUs, compilers, memory systems, execution backends, or a stronger low-cost selector may justify lowering or replacing the fixed gate;
+- the current value intentionally favors portability and general-case safety.
+
+This information is intentionally kept in source, not only in the PR body, so future maintainers do not interpret `2^20` as an invariant or hardware law.
+
+### Durable performance / design evidence
+
+Final production sign-off:
+- https://github.com/Johnny-Kao/numpy/actions/runs/37175297044
+
+Selector convergence:
+- https://github.com/Johnny-Kao/numpy/actions/runs/37133052228
+- branch at run time: `research/searchsorted-selector-tournament`
+- head SHA: `18e9cae03688a7da2bede7776c48428b6e35c4d3`
+- result: success
+
+Near-free selector convergence:
+- https://github.com/Johnny-Kao/numpy/actions/runs/37143347758
+- branch at run time: `research/searchsorted-selector-tournament`
+- head SHA: `8aee17807cc8df378d8eddcb3a8ea1c5fcba59b3`
+- result: success
+
+Activation crossover study:
+- https://github.com/Johnny-Kao/numpy/actions/runs/37147552873
+- branch at run time: `research/searchsorted-selector-tournament`
+- head SHA: `a2c204ea918b76ef335acc2c81951cb2456c52ea`
+- result: success
+
+These workflow-run URLs are repository-level run records and are not expected to disappear merely because the research branch is later deleted. However, logs/artifacts remain subject to GitHub Actions retention policies. Long-term evidence therefore depends on this canonical record + exact run IDs + exact commit SHAs, not on retained artifacts alone.
+
+### Final engineering conclusions
+
+1. **Exploit already-paid state before adding observation work.**
+   The successful selector reuses coarse `ret` state already computed by the current algorithm. This avoided the O(Q) selector tax of query pre-scan designs.
+
+2. **Near-zero selector cost does not imply zero machine-code impact.**
+   An early implementation was semantically inactive below the gate but still caused ~19-24% regression because the larger templated function changed compiler code generation.
+
+3. **Code-generation isolation can be a real performance requirement.**
+   Separate non-inlined historical/locality helpers restored the below-gate path while preserving the locality mechanism.
+
+4. **A threshold discovered empirically must be documented as empirical.**
+   `2^20` is a conservative portable initial value, not a mathematical boundary.
+
+5. **Large speedups require explicit hidden-cost checks.**
+   The ~5.3-5.8x target-path result was only accepted after checking general/random behavior, below-gate behavior, allocation/state/thread cost, binary size, build provenance, and multi-profile repeatability.
+
+6. **Production claims must use the final production-shaped implementation.**
+   Earlier ~6x+ measurements remain research history; the public claim uses the final isolated implementation: ~5.3-5.8x.
+
+### Final scope / cost statement
+
+Runtime selector:
+- no extra O(Q) query scan;
+- no extra O(Q) temporary allocation;
+- no persistent adaptive state/cache;
+- no extra worker threads;
+- no GPU execution;
+- fixed-size 16-sample observation plus small integer/control-flow work.
+
+Target behavior:
+- strong-locality median: ~5.3-5.8x faster in the final matrix.
+
+General behavior:
+- below-gate median: ~1.000-1.007x current across final profiles;
+- no active-random regression observed in the final matrix.
+
+Measured trade-off:
+- compiled `_multiarray_umath` +151,840 bytes (+1.375%).
+
+### Closeout state
+
+Technical work: **COMPLETE for PR1**
+
+Submission:
+- Draft created: 2026-10-04
+- contributor reviewed PR body and requested simplification / Mermaid restoration / horizontal comparison / changed-path highlighting;
+- Draft updated accordingly;
+- contributor explicitly authorized formal publication;
+- PR marked **Ready for Review** on 2026-10-04.
+
+Do not delete research or production branches as part of this closeout automatically. Branch cleanup should occur only after merge/closure when the contributor chooses to remove them.
+
+Next project action:
+- monitor upstream CI / maintainer review;
+- respond only to concrete review evidence;
+- reopen Layer 4 proportionally if maintainers request algorithm, performance, portability, or correctness changes.
