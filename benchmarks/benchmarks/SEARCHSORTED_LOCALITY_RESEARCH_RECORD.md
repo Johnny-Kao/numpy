@@ -1724,3 +1724,123 @@ After that structural isolation:
 5. only then re-enter L5 PR preparation.
 
 No upstream PR without contributor signoff.
+
+
+## 35. Exact-boundary recheck after raising the activation gate
+
+Date: 2026-10-04 JST
+
+Production candidate:
+- branch: `perf/searchsorted-locality-selector`
+- candidate HEAD: `8a058ca3eab725843e3340936d417b3140614b89`
+- upstream base: `2f1eca306857b641fb0fef0ab854a2d4137e1581`
+- activation gate: `Q >= 2^20 = 1048576`
+
+Targeted final-gate run:
+https://github.com/Johnny-Kao/numpy/actions/runs/37174223556
+
+Result:
+- GitHub Actions: **4/4 jobs PASS**
+- focused `searchsorted` tests: PASS on all four jobs
+- build/install provenance: PASS
+- final diff sanity / `git diff --check`: PASS
+- performance sign-off: **REVISE**
+- upstream PR state: **HOLD — do not open yet**
+
+### Why 131072 was superseded
+
+The preceding current-HEAD sign-off showed that the selector/locality mechanism remains very profitable on local workloads, but the candidate still produced meaningful non-target regressions around Q=131072/262144. The production gate was therefore raised to the deliberately conservative boundary `2^20`.
+
+Earlier activation sweeps remain useful evidence, but are not production gates:
+- tested AMD runners were viable around Q~64 in the activation sweep;
+- the Intel runner approached crossover around Q~1024 but narrowly missed the chosen p95 safety target there.
+
+These hardware-dependent crossover observations show substantial future lowering headroom, but do not justify a portable low threshold today.
+
+### Exact-boundary matrix
+
+The targeted suite used:
+- N = 10,000,000
+- Q = 1,048,575 / 1,048,576 / 2,000,000
+- dtype = int32 / int64 / float64
+- side = left / right
+- shapes = dense / random / duplicates / reversal-bursts
+- interleaved Base-before -> Candidate -> Base-after comparison.
+
+Runner CPUs:
+- AMD EPYC 7763
+- AMD EPYC 9V45
+- AMD EPYC 9V74 (two logical profiles)
+
+At active Q >= 1,048,576:
+
+| Profile | Active-random median | Active-random p95 | Active-random worst | Active-local median | Local median speedup |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 vCPU / 2 GiB | 0.978x | 1.022x | 1.023x | 0.165x | 6.06x |
+| 2 vCPU / 4 GiB | 0.914x | 1.033x | 1.054x | 0.159x | 6.29x |
+| 4 vCPU / 8 GiB | 0.974x | 1.016x | 1.019x | 0.161x | 6.21x |
+| 4 vCPU / 14 GiB | 0.915x | 1.042x | 1.051x | 0.157x | 6.35x |
+
+Interpretation:
+- the active selector region is now substantially safer than the rejected lower gate;
+- active random median is near or faster than current in this run;
+- worst active-random ratio is 1.054x, approximately the intended ~5% safety envelope;
+- active-local median speedup is approximately **6.1-6.35x** in this exact-boundary suite;
+- this does **not** establish zero regression for every machine or every input.
+
+### Remaining blocker: below-gate machine-code regression
+
+Raising Q does not solve the previously identified below-gate code-generation problem.
+
+At Q=1,048,575, the candidate logically bypasses the selector and calls the current path, but several float64/left cases still regress materially. Representative exact-boundary observations include:
+- AMD EPYC 7763 micro: float64 duplicates/left ~1.238x current;
+- AMD EPYC 9V74 standard: float64 reversal-bursts/left ~1.203x;
+- AMD EPYC 9V74 small: float64 dense/left ~1.195x.
+
+The same run's Base-before/Base-after drift is small enough on the EPYC 9V74 standard profile (worst drift ~1.012x) that the ~20% below-gate regressions cannot be dismissed as runner noise.
+
+The cause remains structural: locality logic is compiled into the same large templated search function, so adding the new path can alter code layout/code generation even when the runtime activation branch is false.
+
+Therefore the statement "Q below the gate is untouched" is semantically true but **not performance-identical at machine-code level**.
+
+### Resource cost
+
+Compiled `_multiarray_umath`:
+- base: 11,041,288 bytes
+- candidate: 11,147,784 bytes
+- delta: **+106,496 bytes (+0.965%)**
+
+Structural runtime resource cost:
+- no query pre-scan;
+- no new O(Q) temporary allocation;
+- no persistent cache/state;
+- no additional worker threads.
+
+### Final Toolkit decision
+
+L4:
+- correctness: PASS
+- focused tests: PASS
+- build/provenance: PASS
+- diff/scope sanity: PASS
+- active-region performance: PASS within the chosen ~5% envelope for this targeted run
+- resource disclosure: PASS
+- below-gate performance invariance: **FAIL / REVISE**
+
+L5:
+- **REVISE**
+- do not open an upstream Draft PR yet.
+
+### Minimum remaining implementation work
+
+Do not change the selector policy, local finisher, or activation threshold again.
+
+The shortest remaining path is to isolate the locality implementation from the historical batched path at the function/code-generation boundary, so a below-gate call reaches a compact historical implementation whose machine-code shape is not inflated by the locality branch.
+
+Then rerun only:
+1. focused `searchsorted` tests;
+2. binary-size measurement;
+3. the same exact-boundary Base/Candidate/Base matrix;
+4. a small set of the known below-gate float64/left regressions.
+
+If below-gate performance returns to near-current and active-region gains remain, the candidate can re-enter L5 PR preparation.
