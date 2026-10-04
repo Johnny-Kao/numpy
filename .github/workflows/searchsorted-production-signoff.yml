@@ -42,8 +42,8 @@ jobs:
       PROFILE_CPUS: ${{ matrix.cpus }}
       PROFILE_MEM_KB: ${{ matrix.mem_kb }}
       BASE_SHA: 2f1eca306857b641fb0fef0ab854a2d4137e1581
-      CANDIDATE_SHA: fb28dba5eb01bc97f4734ccb37921386db643890
-      ACTIVATE_Q: "131072"
+      CANDIDATE_SHA: 8a058ca3eab725843e3340936d417b3140614b89
+      ACTIVATE_Q: "1048576"
 
     steps:
       - uses: actions/checkout@v4
@@ -147,8 +147,8 @@ jobs:
             (
               ulimit -v "$PROFILE_MEM_KB"
               taskset -c "$CPULIST" env \
-                SEARCHSORTED_TOURNAMENT_SUITE=production_final \
-                SEARCHSORTED_TOURNAMENT_OUT="signoff-results/$label-production_final.json" \
+                SEARCHSORTED_TOURNAMENT_SUITE=production_gate_final \
+                SEARCHSORTED_TOURNAMENT_OUT="signoff-results/$label-production_gate_final.json" \
                 NPY_SEARCHSORTED_RESEARCH_LABEL="$label" \
                 NPY_SEARCHSORTED_RESEARCH_MODE=current \
                 "$py" "$RUNNER_TEMP/bench.py"
@@ -167,12 +167,12 @@ jobs:
           from pathlib import Path
 
           root = Path("signoff-results")
-          gate = 131072
+          gate = 1048576
           keys = ("dtype", "n", "q", "shape", "layout", "side")
           local_shapes = {"dense", "medium", "mostly_monotonic", "duplicates"}
 
           def rows(label):
-              return json.loads((root/f"{label}-production_final.json").read_text())["rows"]
+              return json.loads((root/f"{label}-production_gate_final.json").read_text())["rows"]
 
           b1_rows = rows("base-before")
           b2_rows = rows("base-after")
