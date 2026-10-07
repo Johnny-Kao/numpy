@@ -32,6 +32,7 @@ jobs:
       - name: Install NumPy for research harness
         run: |
           python -m pip install -U pip numpy
+          cd /tmp
           python - <<'PY'
           import numpy as np, platform
           print("numpy", np.__version__)
@@ -41,13 +42,14 @@ jobs:
 
       - name: Run batched metric tournament
         run: |
-          python tools/pr32895_validation/metric_tournament.py
+          cd /tmp
+          python "$GITHUB_WORKSPACE/tools/pr32895_validation/metric_tournament.py"
 
       - name: Upload compact evidence
         uses: actions/upload-artifact@v4
         with:
           name: pr32895-metric-tournament
           path: |
-            pr32895_metric_tournament.json
-            pr32895_metric_tournament.md
+            /tmp/pr32895_metric_tournament.json
+            /tmp/pr32895_metric_tournament.md
           retention-days: 7
