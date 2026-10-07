@@ -1,4 +1,5 @@
 name: PR 32895 left-only stability
+# Research-only interleaved validation.
 # Research-only interleaved stability check.
 
 on:
