@@ -12,6 +12,7 @@ static constexpr std::size_t Q = 1u << 20;
 static constexpr std::size_t N = 1u << 20;
 static constexpr int SAMPLES = 16;
 static constexpr int REPEATS = 200000;
+// Benchmark candidate selectors only; no production code is modified.
 
 static inline std::size_t anchor(int j) {
     return (static_cast<std::size_t>(j) * (Q - 1)) >> 4;
