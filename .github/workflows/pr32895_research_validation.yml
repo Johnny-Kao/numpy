@@ -1,9 +1,6 @@
 name: PR 32895 research validation
 
 on:
-  push:
-    branches:
-      - research/pr32895-review-validation
   workflow_dispatch:
 
 permissions:
