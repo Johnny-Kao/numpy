@@ -65,7 +65,7 @@ jobs:
           git submodule update --init --recursive
           rm -rf build
           spin build
-          spin python /tmp/pr32895_validation.py run \
+          spin python /tmp/pr32895_validation.py -- run \
             --label BASE_BEFORE \
             --output /tmp/pr32895-base-before.json \
             --repeat 15
@@ -82,7 +82,7 @@ jobs:
             -k "searchsorted_locality_large"
           spin test -v -t numpy/_core/tests/test_multiarray.py -- \
             -k "searchsorted and not searchsorted_locality_large"
-          spin python /tmp/pr32895_validation.py run \
+          spin python /tmp/pr32895_validation.py -- run \
             --label LEFT_ONLY_FINAL \
             --output /tmp/pr32895-candidate.json \
             --repeat 15
@@ -94,14 +94,14 @@ jobs:
           git submodule update --init --recursive
           rm -rf build
           spin build
-          spin python /tmp/pr32895_validation.py run \
+          spin python /tmp/pr32895_validation.py -- run \
             --label BASE_AFTER \
             --output /tmp/pr32895-base-after.json \
             --repeat 15
 
       - name: Generate custom comparison
         run: |
-          spin python /tmp/pr32895_validation.py compare \
+          spin python /tmp/pr32895_validation.py -- compare \
             /tmp/pr32895-base-before.json \
             /tmp/pr32895-candidate.json \
             --baseline-after /tmp/pr32895-base-after.json \
