@@ -1,4 +1,5 @@
 name: PR 32895 final research validation
+# Final clean Research-layer validation for the locked left-only candidate.
 
 on:
   push:
