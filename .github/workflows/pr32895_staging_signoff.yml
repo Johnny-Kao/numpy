@@ -1,4 +1,5 @@
 name: PR 32895 staging sign-off
+# Staging-only validation; production-shaped branch remains untouched.
 
 on:
   push:
