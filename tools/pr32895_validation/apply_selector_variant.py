@@ -11,6 +11,7 @@ p.add_argument("mode", choices=[
     "alternating",
 ])
 args = p.parse_args()
+# Research-only tuning variants for PR #32895.
 
 path = Path("numpy/_core/src/npysort/binsearch.cpp")
 text = path.read_text()
