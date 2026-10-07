@@ -1,0 +1,131 @@
+name: PR 32895 same-runner selector ABA
+
+on:
+  push:
+    branches:
+      - research/pr32895-review-validation
+    paths:
+      - .github/workflows/pr32895_selector_aba.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  aba:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      MESON_ARGS: -Dallow-noblas=true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install -r requirements/build_requirements.txt
+
+      - name: Preserve harnesses
+        run: |
+          cp tools/pr32895_validation/searchsorted_locality_validation.py /tmp/pr32895_validation.py
+          cp tools/pr32895_validation/apply_adjacent_selector.py /tmp/apply_adjacent_selector.py
+
+      - name: Current before
+        run: |
+          rm -rf build
+          spin build
+          spin python /tmp/pr32895_validation.py -- run \
+            --label current_before \
+            --output /tmp/current_before.json \
+            --repeat 15
+
+      - name: Adjacent
+        run: |
+          python /tmp/apply_adjacent_selector.py
+          git diff --check
+          rm -rf build
+          spin build
+          spin python /tmp/pr32895_validation.py -- run \
+            --label adjacent \
+            --output /tmp/adjacent.json \
+            --repeat 15
+
+      - name: Current after
+        run: |
+          git reset --hard HEAD
+          rm -rf build
+          spin build
+          spin python /tmp/pr32895_validation.py -- run \
+            --label current_after \
+            --output /tmp/current_after.json \
+            --repeat 15
+
+      - name: Compare ABA
+        run: |
+          python - <<'PY'
+          import json, statistics
+          from pathlib import Path
+
+          files = {
+              'before': json.load(open('/tmp/current_before.json')),
+              'adjacent': json.load(open('/tmp/adjacent.json')),
+              'after': json.load(open('/tmp/current_after.json')),
+          }
+
+          wanted = {
+              'ordered_control',
+              'adversarial_random_interiors',
+              'adversarial_oscillating_interiors',
+              'adversarial_reversed_blocks',
+          }
+
+          def rows(d):
+              out = {}
+              for r in d['timings']:
+                  if r['case'] in wanted:
+                      out[(r['case'], r['side'])] = r
+              return out
+
+          rr = {k: rows(v) for k,v in files.items()}
+          keys = sorted(set(rr['before']) & set(rr['adjacent']) & set(rr['after']))
+
+          lines = [
+              '# PR #32895 same-runner selector ABA',
+              '',
+              '| Case | Side | Before | Adjacent | After | Baseline drift | Adjacent vs baseline-ref |',
+              '|---|---|---:|---:|---:|---:|---:|',
+          ]
+          verdict = True
+          for key in keys:
+              b = rr['before'][key]['median_seconds']
+              a = rr['adjacent'][key]['median_seconds']
+              c = rr['after'][key]['median_seconds']
+              ref = statistics.median([b,c])
+              drift = (c/b - 1.0) * 100.0
+              delta = (a/ref - 1.0) * 100.0
+              if abs(drift) > 3.0:
+                  verdict = False
+              lines.append(f'| {key[0]} | {key[1]} | {b:.6f} | {a:.6f} | {c:.6f} | {drift:+.2f}% | {delta:+.2f}% |')
+
+          lines += ['', f'Baseline-drift gate (all <=3%): {"PASS" if verdict else "FAIL/INCONCLUSIVE"}']
+          Path('/tmp/aba.md').write_text('\n'.join(lines)+'\n')
+          print('\n'.join(lines))
+          PY
+
+      - name: Upload compact evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: selector-aba
+          path: |
+            /tmp/current_before.json
+            /tmp/adjacent.json
+            /tmp/current_after.json
+            /tmp/aba.md
+          retention-days: 7
