@@ -1,0 +1,147 @@
+name: PR 32895 exact ASV regression recheck
+
+on:
+  push:
+    branches:
+      - research/pr32895-left-only-final
+    paths:
+      - .github/workflows/pr32895_exact_asv_recheck.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      BASE_SHA: 2f1eca306857b641fb0fef0ab854a2d4137e1581
+      CANDIDATE_SHA: 90a808dd24507aa0229204063fae85c4b7f06ee3
+      MESON_ARGS: -Dallow-noblas=true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        run: python -m pip install -r requirements/build_requirements.txt
+
+      - name: Write exact benchmark harness
+        run: |
+          cat >/tmp/exact_asv_recheck.py <<'PY'
+          import json, statistics, sys, time
+          import numpy as np
+
+          label, out = sys.argv[1], sys.argv[2]
+          results = {}
+          for use_sorter in (False, True):
+              arr = np.arange(100, dtype=np.int32)
+              rng = np.random.default_rng(42)
+              queries = rng.integers(-10, 110, size=10, dtype=np.int32)
+              if use_sorter:
+                  rng.shuffle(arr)
+                  sorter = arr.argsort()
+              else:
+                  sorter = None
+
+              # Verify correctness against a sorted reference.
+              actual = np.searchsorted(arr, queries, sorter=sorter)
+              ref = np.searchsorted(np.sort(arr), queries)
+              assert np.array_equal(actual, ref)
+
+              # Same tiny call measured many times; collect independent blocks
+              # so scheduler noise is visible instead of hidden in one mean.
+              for _ in range(10000):
+                  np.searchsorted(arr, queries, sorter=sorter)
+
+              blocks = []
+              inner = 20000
+              for _ in range(21):
+                  t0 = time.perf_counter_ns()
+                  for _ in range(inner):
+                      np.searchsorted(arr, queries, sorter=sorter)
+                  t1 = time.perf_counter_ns()
+                  blocks.append((t1 - t0) / inner)
+
+              results[str(use_sorter)] = {
+                  "median_ns": statistics.median(blocks),
+                  "min_ns": min(blocks),
+                  "max_ns": max(blocks),
+                  "blocks_ns": blocks,
+              }
+
+          with open(out, "w") as f:
+              json.dump({"label": label, "results": results}, f, indent=2)
+          print(label, results)
+          PY
+
+      - name: A1 baseline
+        run: |
+          git checkout --detach "$BASE_SHA"
+          git submodule update --init --recursive
+          rm -rf build
+          spin build
+          spin python /tmp/exact_asv_recheck.py -- A1 /tmp/A1.json
+
+      - name: B1 candidate
+        run: |
+          git checkout --detach "$CANDIDATE_SHA"
+          git submodule update --init --recursive
+          rm -rf build
+          spin build
+          spin python /tmp/exact_asv_recheck.py -- B1 /tmp/B1.json
+
+      - name: A2 baseline
+        run: |
+          git checkout --detach "$BASE_SHA"
+          git submodule update --init --recursive
+          rm -rf build
+          spin build
+          spin python /tmp/exact_asv_recheck.py -- A2 /tmp/A2.json
+
+      - name: B2 candidate
+        run: |
+          git checkout --detach "$CANDIDATE_SHA"
+          git submodule update --init --recursive
+          rm -rf build
+          spin build
+          spin python /tmp/exact_asv_recheck.py -- B2 /tmp/B2.json
+
+      - name: A3 baseline
+        run: |
+          git checkout --detach "$BASE_SHA"
+          git submodule update --init --recursive
+          rm -rf build
+          spin build
+          spin python /tmp/exact_asv_recheck.py -- A3 /tmp/A3.json
+
+      - name: Summarize
+        run: |
+          python - <<'PY'
+          import json, statistics
+          A=[json.load(open(f"/tmp/A{i}.json")) for i in (1,2,3)]
+          B=[json.load(open(f"/tmp/B{i}.json")) for i in (1,2)]
+          for sorter in ("False","True"):
+              av=[x["results"][sorter]["median_ns"] for x in A]
+              bv=[x["results"][sorter]["median_ns"] for x in B]
+              am=statistics.mean(av)
+              bm=statistics.mean(bv)
+              span=(max(av)/min(av)-1)*100
+              delta=(bm/am-1)*100
+              print(f"sorter={sorter}: A={av}, B={bv}, A-span={span:.2f}%, B-vs-A={delta:+.2f}%")
+          PY
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: exact-asv-recheck
+          path: /tmp/A*.json
+          retention-days: 7
