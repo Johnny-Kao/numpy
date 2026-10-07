@@ -1,0 +1,46 @@
+name: PR 32895 selector cost tournament
+
+on:
+  push:
+    branches:
+      - research/pr32895-review-validation
+    paths:
+      - tools/pr32895_validation/selector_cost_tournament.cpp
+      - .github/workflows/pr32895_selector_cost.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cost:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        compiler:
+          - g++
+          - clang++
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compiler info
+        run: ${{ matrix.compiler }} --version
+
+      - name: Build selector tournament
+        run: |
+          ${{ matrix.compiler }} -O3 -DNDEBUG -std=c++17 \
+            tools/pr32895_validation/selector_cost_tournament.cpp \
+            -o /tmp/selector_cost_tournament
+
+      - name: Run selector tournament
+        run: |
+          /tmp/selector_cost_tournament | tee selector_cost_${{ matrix.compiler }}.csv
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: selector-cost-${{ matrix.compiler }}
+          path: selector_cost_${{ matrix.compiler }}.csv
+          retention-days: 7
