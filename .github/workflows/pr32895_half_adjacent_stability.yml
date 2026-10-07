@@ -1,4 +1,5 @@
 name: PR 32895 half-adjacent stability
+# Research-only interleaved stability check.
 
 on:
   push:
