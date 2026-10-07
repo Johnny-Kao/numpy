@@ -1,0 +1,217 @@
+name: PR 32895 staging sign-off
+
+on:
+  push:
+    branches:
+      - staging-ci/pr32895-left-only
+    paths:
+      - .github/workflows/pr32895_staging_signoff.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr32895-staging-signoff
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      STAGING_SHA: 10770bb0f59326ec90ea1dd5b94cbe930ce96c06
+      BASE_SHA: 2f1eca306857b641fb0fef0ab854a2d4137e1581
+      MESON_ARGS: -Dallow-noblas=true
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install -U pip
+          python -m pip install -r requirements/build_requirements.txt
+          python -m pip install -r requirements/test_requirements.txt
+          python -m pip install "asv<0.6.5" virtualenv packaging
+
+      - name: Preserve staging validation harness
+        run: |
+          cp tools/pr32895_validation/searchsorted_locality_validation.py /tmp/pr32895_validation.py
+          shasum -a 256 /tmp/pr32895_validation.py
+          git show -s --format='%H %s' "$STAGING_SHA"
+          git diff --name-status df1932e3a30e0f84332ec15b7bf1209fc1587c08..."$STAGING_SHA"
+          git diff --stat df1932e3a30e0f84332ec15b7bf1209fc1587c08..."$STAGING_SHA"
+
+      - name: Baseline before
+        run: |
+          git checkout --detach "$BASE_SHA"
+          git submodule update --init --recursive
+          rm -rf build
+          spin build
+          spin python /tmp/pr32895_validation.py -- run --label STAGING_BASE_BEFORE --output /tmp/staging-base-before.json --repeat 15
+
+      - name: Staging correctness and adversarial validation
+        run: |
+          git checkout --detach "$STAGING_SHA"
+          git submodule update --init --recursive
+          rm -rf build
+          git diff --check
+          spin build
+          spin test -v -t numpy/_core/tests/test_multiarray.py -- -k "searchsorted_locality_large"
+          spin test -v -t numpy/_core/tests/test_multiarray.py -- -k "searchsorted and not searchsorted_locality_large"
+          spin python /tmp/pr32895_validation.py -- run --label STAGING_LEFT_ONLY --output /tmp/staging-candidate.json --repeat 15
+
+      - name: Baseline after
+        run: |
+          git checkout --detach "$BASE_SHA"
+          git submodule update --init --recursive
+          rm -rf build
+          spin build
+          spin python /tmp/pr32895_validation.py -- run --label STAGING_BASE_AFTER --output /tmp/staging-base-after.json --repeat 15
+
+      - name: Generate custom comparison
+        run: |
+          spin python /tmp/pr32895_validation.py -- compare /tmp/staging-base-before.json /tmp/staging-candidate.json --baseline-after /tmp/staging-base-after.json --output /tmp/staging-comparison.md
+          cat /tmp/staging-comparison.md
+
+      - name: Run unchanged SearchSorted ASV
+        id: asv
+        continue-on-error: true
+        shell: 'script -q -e -c "bash --noprofile --norc -eo pipefail {0}"'
+        run: |
+          git checkout --detach "$STAGING_SHA"
+          git submodule update --init --recursive
+          rm -rf build
+          spin build
+          asv machine --yes --config benchmarks/asv.conf.json
+          spin bench --compare "$BASE_SHA" -t bench_searchsorted.SearchSorted | tee /tmp/staging-asv.txt
+
+      - name: Write exact tiny-case harness
+        run: |
+          cat >/tmp/exact_asv_recheck.py <<'PY'
+          import json, statistics, sys, time
+          import numpy as np
+
+          label, out = sys.argv[1], sys.argv[2]
+          results = {}
+          for use_sorter in (False, True):
+              arr = np.arange(100, dtype=np.int32)
+              rng = np.random.default_rng(42)
+              queries = rng.integers(-10, 110, size=10, dtype=np.int32)
+              if use_sorter:
+                  rng.shuffle(arr)
+                  sorter = arr.argsort()
+              else:
+                  sorter = None
+              actual = np.searchsorted(arr, queries, sorter=sorter)
+              ref = np.searchsorted(np.sort(arr), queries)
+              assert np.array_equal(actual, ref)
+              for _ in range(10000):
+                  np.searchsorted(arr, queries, sorter=sorter)
+              blocks = []
+              inner = 20000
+              for _ in range(21):
+                  t0 = time.perf_counter_ns()
+                  for _ in range(inner):
+                      np.searchsorted(arr, queries, sorter=sorter)
+                  t1 = time.perf_counter_ns()
+                  blocks.append((t1 - t0) / inner)
+              results[str(use_sorter)] = {
+                  "median_ns": statistics.median(blocks),
+                  "blocks_ns": blocks,
+              }
+          with open(out, "w") as f:
+              json.dump({"label": label, "results": results}, f, indent=2)
+          print(label, results)
+          PY
+
+      - name: Tiny-case A1 baseline
+        run: |
+          git checkout --detach "$BASE_SHA"
+          git submodule update --init --recursive
+          rm -rf build
+          spin build
+          spin python /tmp/exact_asv_recheck.py -- A1 /tmp/tiny-A1.json
+
+      - name: Tiny-case B1 staging
+        run: |
+          git checkout --detach "$STAGING_SHA"
+          git submodule update --init --recursive
+          rm -rf build
+          spin build
+          spin python /tmp/exact_asv_recheck.py -- B1 /tmp/tiny-B1.json
+
+      - name: Tiny-case A2 baseline
+        run: |
+          git checkout --detach "$BASE_SHA"
+          git submodule update --init --recursive
+          rm -rf build
+          spin build
+          spin python /tmp/exact_asv_recheck.py -- A2 /tmp/tiny-A2.json
+
+      - name: Tiny-case B2 staging
+        run: |
+          git checkout --detach "$STAGING_SHA"
+          git submodule update --init --recursive
+          rm -rf build
+          spin build
+          spin python /tmp/exact_asv_recheck.py -- B2 /tmp/tiny-B2.json
+
+      - name: Tiny-case A3 baseline
+        run: |
+          git checkout --detach "$BASE_SHA"
+          git submodule update --init --recursive
+          rm -rf build
+          spin build
+          spin python /tmp/exact_asv_recheck.py -- A3 /tmp/tiny-A3.json
+
+      - name: Final staging summary
+        run: |
+          python - <<'PY'
+          import json, statistics
+          A=[json.load(open(f"/tmp/tiny-A{i}.json")) for i in (1,2,3)]
+          B=[json.load(open(f"/tmp/tiny-B{i}.json")) for i in (1,2)]
+          lines=["# PR #32895 staging sign-off", ""]
+          ok=True
+          for sorter in ("False","True"):
+              av=[x["results"][sorter]["median_ns"] for x in A]
+              bv=[x["results"][sorter]["median_ns"] for x in B]
+              am=statistics.mean(av)
+              bm=statistics.mean(bv)
+              span=(max(av)/min(av)-1)*100
+              delta=(bm/am-1)*100
+              if span <= 3.0 and delta > 3.0:
+                  ok=False
+              lines.append(f"- sorter={sorter}: baseline span {span:.2f}%, staging vs baseline {delta:+.2f}%")
+          lines.append("")
+          lines.append("- unchanged ASV step is recorded separately above")
+          lines.append(f"- tiny-case confirmation gate: {'PASS' if ok else 'FAIL'}")
+          open("/tmp/staging-signoff.md","w").write("\n".join(lines)+"\n")
+          print("\n".join(lines))
+          if not ok:
+              raise SystemExit("confirmed tiny-case regression")
+          PY
+
+      - name: Upload staging evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr32895-staging-signoff
+          path: |
+            /tmp/staging-base-before.json
+            /tmp/staging-candidate.json
+            /tmp/staging-base-after.json
+            /tmp/staging-comparison.md
+            /tmp/staging-asv.txt
+            /tmp/staging-signoff.md
+            /tmp/tiny-*.json
+          if-no-files-found: warn
+          retention-days: 7
