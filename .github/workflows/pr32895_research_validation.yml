@@ -1,0 +1,124 @@
+name: PR 32895 research validation
+
+on:
+  push:
+    branches:
+      - research/pr32895-review-validation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr32895-research-validation
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      PR_SHA: df1932e3a30e0f84332ec15b7bf1209fc1587c08
+      BASE_SHA: 2f1eca306857b641fb0fef0ab854a2d4137e1581
+      MESON_ARGS: -Dallow-noblas=true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Record environment
+        run: |
+          python --version
+          uname -a
+          lscpu
+          git rev-parse HEAD
+          git show -s --format='%H %s' "$PR_SHA"
+          git show -s --format='%H %s' "$BASE_SHA"
+          git diff --name-status "$BASE_SHA...$PR_SHA"
+          git diff --stat "$BASE_SHA...$PR_SHA"
+
+      - name: Install build, test, and ASV dependencies
+        run: |
+          python -m pip install -U pip
+          python -m pip install -r requirements/build_requirements.txt
+          python -m pip install -r requirements/test_requirements.txt
+          python -m pip install "asv<0.6.5" virtualenv packaging
+
+      - name: Preserve validation harness outside worktree
+        run: |
+          cp tools/pr32895_validation/apply_tests.py /tmp/pr32895_apply_tests.py
+          cp tools/pr32895_validation/searchsorted_locality_validation.py /tmp/pr32895_validation.py
+          shasum -a 256 /tmp/pr32895_apply_tests.py /tmp/pr32895_validation.py
+
+      - name: Baseline before
+        run: |
+          git checkout --detach "$BASE_SHA"
+          git submodule update --init --recursive
+          rm -rf build
+          spin build
+          spin python /tmp/pr32895_validation.py -- run             --label BASE_BEFORE             --output /tmp/pr32895-base-before.json             --repeat 7
+
+      - name: PR correctness and adversarial validation
+        run: |
+          git checkout --detach "$PR_SHA"
+          git submodule update --init --recursive
+          rm -rf build
+          python /tmp/pr32895_apply_tests.py
+          git diff --check
+          spin build
+          spin test -v -t numpy/_core/tests/test_multiarray.py --             -k "searchsorted_locality_large"
+          spin test -v -t numpy/_core/tests/test_multiarray.py --             -k "searchsorted and not searchsorted_locality_large"
+          spin python /tmp/pr32895_validation.py -- run             --label PR_HEAD             --output /tmp/pr32895-pr.json             --repeat 7
+
+      - name: Baseline after
+        run: |
+          git reset --hard "$PR_SHA"
+          git checkout --detach "$BASE_SHA"
+          git submodule update --init --recursive
+          rm -rf build
+          spin build
+          spin python /tmp/pr32895_validation.py -- run             --label BASE_AFTER             --output /tmp/pr32895-base-after.json             --repeat 7
+
+      - name: Generate custom comparison
+        run: |
+          spin python /tmp/pr32895_validation.py -- compare             /tmp/pr32895-base-before.json             /tmp/pr32895-pr.json             --baseline-after /tmp/pr32895-base-after.json             --output /tmp/pr32895-comparison.md
+          cat /tmp/pr32895-comparison.md
+
+      - name: Run existing SearchSorted ASV unchanged
+        shell: 'script -q -e -c "bash --noprofile --norc -eo pipefail {0}"'
+        run: |
+          git checkout --detach "$PR_SHA"
+          git submodule update --init --recursive
+          rm -rf build
+          spin build
+          asv machine --yes --config benchmarks/asv.conf.json
+          spin bench --compare "$BASE_SHA" -t bench_searchsorted.SearchSorted | tee /tmp/pr32895-asv.txt
+
+      - name: Summarize imported NumPy paths
+        if: always()
+        run: |
+          for f in /tmp/pr32895-base-before.json /tmp/pr32895-pr.json /tmp/pr32895-base-after.json; do
+            if [ -f "$f" ]; then
+              python -c 'import json,sys; d=json.load(open(sys.argv[1])); print(sys.argv[1], d["numpy_file"], d["numpy_version"])' "$f"
+            fi
+          done
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr32895-validation-evidence
+          path: |
+            /tmp/pr32895-base-before.json
+            /tmp/pr32895-pr.json
+            /tmp/pr32895-base-after.json
+            /tmp/pr32895-comparison.md
+            /tmp/pr32895-asv.txt
+          if-no-files-found: warn
+          retention-days: 7
