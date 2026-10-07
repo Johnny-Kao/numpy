@@ -1,0 +1,53 @@
+name: PR 32895 metric tournament
+
+on:
+  push:
+    branches:
+      - research/pr32895-review-validation
+    paths:
+      - tools/pr32895_validation/metric_tournament.py
+      - .github/workflows/pr32895_metric_tournament.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr32895-metric-tournament
+  cancel-in-progress: true
+
+jobs:
+  tournament:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install NumPy for research harness
+        run: |
+          python -m pip install -U pip numpy
+          python - <<'PY'
+          import numpy as np, platform
+          print("numpy", np.__version__)
+          print("python", platform.python_version())
+          print("platform", platform.platform())
+          PY
+
+      - name: Run batched metric tournament
+        run: |
+          python tools/pr32895_validation/metric_tournament.py
+
+      - name: Upload compact evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr32895-metric-tournament
+          path: |
+            pr32895_metric_tournament.json
+            pr32895_metric_tournament.md
+          retention-days: 7
