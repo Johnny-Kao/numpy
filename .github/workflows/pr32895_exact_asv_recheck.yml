@@ -1,4 +1,5 @@
 name: PR 32895 exact ASV regression recheck
+# Research-only exact-case confirmation.
 
 on:
   push:
