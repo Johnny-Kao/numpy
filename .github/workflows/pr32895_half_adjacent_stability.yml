@@ -1,0 +1,145 @@
+name: PR 32895 half-adjacent stability
+
+on:
+  push:
+    branches:
+      - research/pr32895-review-validation
+    paths:
+      - .github/workflows/pr32895_half_adjacent_stability.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stability:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      MESON_ARGS: -Dallow-noblas=true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        run: python -m pip install -r requirements/build_requirements.txt
+
+      - name: Preserve harnesses
+        run: |
+          cp tools/pr32895_validation/searchsorted_locality_validation.py /tmp/pr32895_validation.py
+          cp tools/pr32895_validation/apply_selector_variant.py /tmp/apply_selector_variant.py
+
+      - name: A1 current
+        run: |
+          spin build
+          spin python /tmp/pr32895_validation.py -- run \
+            --label A1_current \
+            --output /tmp/A1_current.json \
+            --repeat 15
+
+      - name: B1 half-adjacent
+        run: |
+          python /tmp/apply_selector_variant.py half_adjacent
+          git diff --check
+          spin build
+          spin python /tmp/pr32895_validation.py -- run \
+            --label B1_half_adjacent \
+            --output /tmp/B1_half_adjacent.json \
+            --repeat 15
+
+      - name: A2 current
+        run: |
+          git checkout -- numpy/_core/src/npysort/binsearch.cpp
+          spin build
+          spin python /tmp/pr32895_validation.py -- run \
+            --label A2_current \
+            --output /tmp/A2_current.json \
+            --repeat 15
+
+      - name: B2 half-adjacent
+        run: |
+          python /tmp/apply_selector_variant.py half_adjacent
+          spin build
+          spin python /tmp/pr32895_validation.py -- run \
+            --label B2_half_adjacent \
+            --output /tmp/B2_half_adjacent.json \
+            --repeat 15
+
+      - name: A3 current
+        run: |
+          git checkout -- numpy/_core/src/npysort/binsearch.cpp
+          spin build
+          spin python /tmp/pr32895_validation.py -- run \
+            --label A3_current \
+            --output /tmp/A3_current.json \
+            --repeat 15
+
+      - name: Compare stability
+        run: |
+          python - <<'PY'
+          import json, statistics
+          from pathlib import Path
+
+          cases = [
+              'ordered_control',
+              'adversarial_random_interiors',
+              'adversarial_oscillating_interiors',
+              'adversarial_reversed_blocks',
+          ]
+          sides = ['left','right']
+          names = ['A1_current','B1_half_adjacent','A2_current','B2_half_adjacent','A3_current']
+          data = {n: json.load(open(f'/tmp/{n}.json')) for n in names}
+
+          def med(name, case, side):
+              return data[name]['benchmarks'][case][side]['median_s']
+
+          lines = [
+              '# PR #32895 half-adjacent interleaved stability',
+              '',
+              '| Case | Side | A1 | B1 | A2 | B2 | A3 | A drift span | B mean vs A mean |',
+              '|---|---|---:|---:|---:|---:|---:|---:|---:|',
+          ]
+          ordered_gate = True
+          stability_gate = True
+          for case in cases:
+              for side in sides:
+                  a_vals = [med('A1_current',case,side), med('A2_current',case,side), med('A3_current',case,side)]
+                  b_vals = [med('B1_half_adjacent',case,side), med('B2_half_adjacent',case,side)]
+                  a_mean = statistics.mean(a_vals)
+                  b_mean = statistics.mean(b_vals)
+                  span = (max(a_vals)/min(a_vals)-1.0)*100.0
+                  delta = (b_mean/a_mean-1.0)*100.0
+                  if span > 3.0:
+                      stability_gate = False
+                  if case == 'ordered_control' and delta > 3.0:
+                      ordered_gate = False
+                  lines.append(f'| {case} | {side} | {a_vals[0]:.6f} | {b_vals[0]:.6f} | {a_vals[1]:.6f} | {b_vals[1]:.6f} | {a_vals[2]:.6f} | {span:.2f}% | {delta:+.2f}% |')
+
+          lines += [
+              '',
+              f'Current-baseline stability span gate (all <=3%): {"PASS" if stability_gate else "INCONCLUSIVE"}',
+              f'Ordered regression gate (half-adjacent <=3%): {"PASS" if ordered_gate else "FAIL"}',
+          ]
+          Path('/tmp/half_adjacent_stability.md').write_text('\n'.join(lines)+'\n')
+          print('\n'.join(lines))
+          PY
+
+      - name: Upload compact evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: half-adjacent-stability
+          path: |
+            /tmp/A1_current.json
+            /tmp/B1_half_adjacent.json
+            /tmp/A2_current.json
+            /tmp/B2_half_adjacent.json
+            /tmp/A3_current.json
+            /tmp/half_adjacent_stability.md
+          retention-days: 7
