@@ -15,6 +15,7 @@ SEEDS = list(range(20261007, 20261022))
 SAMPLE_COUNTS = (17, 33, 65)
 TIMING_REPEATS = 15
 TIMING_WARMUP = 3
+# Research-only: keep all candidate metrics in one batched run.
 
 
 def sample_indices(count: int) -> np.ndarray:
