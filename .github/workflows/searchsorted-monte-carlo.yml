@@ -80,5 +80,11 @@ jobs:
             /tmp/a0_2.json
             /tmp/base2.json
             /tmp/summary.txt
-            /tmp/monte_carlo_summary.json\n            /tmp/hardware.txt\n            /tmp/memory_*.txt\n            /tmp/load_*.txt\n            /tmp/freq_*.txt\n            /tmp/cgroup_memory_*.txt\n            /tmp/python_packages.txt
+            /tmp/monte_carlo_summary.json
+            /tmp/hardware.txt
+            /tmp/memory_*.txt
+            /tmp/load_*.txt
+            /tmp/freq_*.txt
+            /tmp/cgroup_memory_*.txt
+            /tmp/python_packages.txt
           retention-days: 2
