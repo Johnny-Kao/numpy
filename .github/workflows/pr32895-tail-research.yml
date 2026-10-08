@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/pr32895-tail-research.yml'
       - 'research/pr32895-maintainer-last-passes/test_tail_v1.py'
+      - 'research/pr32895-maintainer-last-passes/tail_microbench.cpp'
       - 'numpy/_core/src/npysort/binsearch.cpp'
   workflow_dispatch:
 
@@ -33,3 +34,8 @@ jobs:
         run: |
           cd /tmp
           python "$GITHUB_WORKSPACE/research/pr32895-maintainer-last-passes/test_tail_v1.py"
+
+      - name: Run controlled C++ tail microbenchmark
+        run: |
+          g++ -O3 -std=c++17 -Wall -Wextra -o /tmp/tailbench research/pr32895-maintainer-last-passes/tail_microbench.cpp
+          /tmp/tailbench
