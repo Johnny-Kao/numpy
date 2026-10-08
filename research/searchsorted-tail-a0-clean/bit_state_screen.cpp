@@ -45,7 +45,7 @@ int main(){
    cases++;
   }
  }
- std::cout<<"correctness_pass="<<cases<<"\\n";
+ std::cout<<"correctness_pass="<<cases<<"\n";
  for(int n:{128,4096,65536,1048576})for(int q:{1,16,1024,65536})for(int pattern=0;pattern<3;pattern++)for(bool right:{false,true}){
   std::vector<i64>a(n),keys(q),out(q);
   for(int i=0;i<n;i++)a[i]=i;
@@ -66,6 +66,6 @@ int main(){
    timings[mode]+=elapsed/5.;
    sink=sink+out[0];
   }
-  std::cout<<"case n="<<n<<" q="<<q<<" pattern="<<pattern<<" right="<<right<<" base_ns="<<timings[0]<<" a0_ns="<<timings[1]<<" bit_ns="<<timings[2]<<" a0_speedup="<<timings[0]/timings[1]<<" bit_speedup="<<timings[0]/timings[2]<<"\\n";
+  std::cout<<"case n="<<n<<" q="<<q<<" pattern="<<pattern<<" right="<<right<<" base_ns="<<timings[0]<<" a0_ns="<<timings[1]<<" bit_ns="<<timings[2]<<" a0_speedup="<<timings[0]/timings[1]<<" bit_speedup="<<timings[0]/timings[2]<<"\n";
  }
 }
