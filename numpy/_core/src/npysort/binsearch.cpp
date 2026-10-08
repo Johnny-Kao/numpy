@@ -137,49 +137,8 @@ binsearch_locality(const char *arr, const char *key, char *ret,
         ++completed_levels;
     }
 
-    bool reversed = false;
-    int direction = 0;
-    npy_intp prev = *(npy_intp *)ret;
-    const npy_intp first_bucket = prev;
-    bool same_bucket = true;
-    const npy_intp last = key_len - 1;
-    for (npy_intp j = 1; j <= LOCALITY_SAMPLES; ++j) {
-        const npy_intp i = (j * last) >> 4;
-        const npy_intp pos = *(npy_intp *)(ret + i * ret_str);
-        if (pos != first_bucket) same_bucket = false;
-        if (pos > prev) {
-            if (direction < 0) { reversed = true; break; }
-            direction = 1;
-        }
-        else if (pos < prev) {
-            if (direction > 0) { reversed = true; break; }
-            direction = -1;
-        }
-        prev = pos;
-    }
-
-    if (!reversed && same_bucket && direction >= 0) {
-        /*
-         * Sparse coarse samples can look monotone even when the query sequence
-         * between them is hostile to the locality path. Check the value
-         * immediately preceding each deterministic sample using the dtype's
-         * existing ordering semantics. This keeps the selector O(1) while
-         * rejecting the adversarial patterns found during review validation.
-         */
-        for (npy_intp j = 0; j <= LOCALITY_SAMPLES && !reversed; ++j) {
-            const npy_intp i = (j * last) >> 4;
-            if (i > 0) {
-                const T key_val = *(const T *)(key + i * key_str);
-                const T prev_key_val =
-                        *(const T *)(key + (i - 1) * key_str);
-                if (less(key_val, prev_key_val)) {
-                    reversed = true;
-                }
-            }
-        }
-    }
-
-    if (!reversed && same_bucket && direction >= 0 && interval_length > 1) {
+    // The dispatcher proves order for this chunk before calling this helper.
+    if (interval_length > 1) {
         npy_intp previous_pos = 0;
         T last_key_val = *(const T *)key;
         for (npy_intp i = 0; i < key_len; ++i) {
@@ -259,27 +218,31 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
         return;
     }
 
-    /*
-     * Research-only structural gate: do not use a hardware-calibrated Q
-     * crossover. Require enough distinct sample positions and contiguous
-     * inputs. The coarse search below then checks whether all sampled keys
-     * remain in the same coarse bucket before accepting the locality path.
-     * Sampling is only a hint, not a proof about unsampled query keys.
-     */
-    constexpr npy_intp LOCALITY_SAMPLES = 16;
-    const bool locality_candidate =
-            key_len > LOCALITY_SAMPLES &&
-            key_str == (npy_intp)sizeof(T) &&
-            arr_str == (npy_intp)sizeof(T);
-
-    if (!locality_candidate) {
-        binsearch_current<Tag, side>(arr, key, ret, arr_len, key_len, arr_str,
-                                     key_str, ret_str);
-        return;
+    // Research-only B: fixed blocks limit the effect of a hostile interior.
+    // Block size is experimental, not an accepted production threshold.
+    constexpr npy_intp BLOCK_KEYS = 256;
+    for (npy_intp start = 0; start < key_len;) {
+        const npy_intp count = std::min(BLOCK_KEYS, key_len - start);
+        const char *chunk_key = key + start * key_str;
+        char *chunk_ret = ret + start * ret_str;
+        bool ordered = count > 1 &&
+                key_str == (npy_intp)sizeof(T) &&
+                arr_str == (npy_intp)sizeof(T);
+        for (npy_intp i = 1; ordered && i < count; ++i) {
+            const T prior = *(const T *)(chunk_key + (i - 1) * key_str);
+            const T current = *(const T *)(chunk_key + i * key_str);
+            if (Tag::less(current, prior)) ordered = false;
+        }
+        if (ordered) {
+            binsearch_locality<Tag, side>(arr, chunk_key, chunk_ret, arr_len,
+                    count, arr_str, key_str, ret_str);
+        }
+        else {
+            binsearch_current<Tag, side>(arr, chunk_key, chunk_ret, arr_len,
+                    count, arr_str, key_str, ret_str);
+        }
+        start += count;
     }
-
-    binsearch_locality<Tag, side>(arr, key, ret, arr_len, key_len, arr_str,
-                                  key_str, ret_str);
 }
 
 #undef NPY_BINSEARCH_NOINLINE
