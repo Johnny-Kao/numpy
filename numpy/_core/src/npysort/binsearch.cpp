@@ -276,7 +276,7 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
      * The current choice intentionally favors portability and general-case
      * safety over capturing every profitable smaller-locality workload.
      */
-    constexpr npy_intp LOCALITY_MIN_KEYS = 1 << 20;
+    constexpr npy_intp LOCALITY_MIN_KEYS = NPY_LOCALITY_Q_STUDY;
     const bool locality_candidate =
             key_len >= LOCALITY_MIN_KEYS &&
             key_str == (npy_intp)sizeof(T) &&
