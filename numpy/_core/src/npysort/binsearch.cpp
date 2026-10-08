@@ -166,13 +166,20 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
         If cmp(arr[base], key_val) == true, insertion index is base + 1
         Otherwise the insertion order is just base
     */
-    for (npy_intp i = 0; i < key_len; ++i) {
-        npy_intp &base = *(npy_intp *)(ret + i * ret_str);
-        const T key_val = *(const T *)(key + i * key_str);
-        if (interval_length > 1) {
+    if (interval_length > 1) {
+        for (npy_intp i = 0; i < key_len; ++i) {
+            npy_intp &base = *(npy_intp *)(ret + i * ret_str);
+            const T key_val = *(const T *)(key + i * key_str);
             base += cmp(*(const T *)(arr + (base + 1) * arr_str), key_val);
+            base += cmp(*(const T *)(arr + base * arr_str), key_val);
         }
-        base += cmp(*(const T *)(arr + base * arr_str), key_val);
+    }
+    else {
+        for (npy_intp i = 0; i < key_len; ++i) {
+            npy_intp &base = *(npy_intp *)(ret + i * ret_str);
+            const T key_val = *(const T *)(key + i * key_str);
+            base += cmp(*(const T *)(arr + base * arr_str), key_val);
+        }
     }
 }
 
