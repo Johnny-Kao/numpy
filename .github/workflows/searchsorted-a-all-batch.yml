@@ -1,0 +1,84 @@
+name: Searchsorted A1 A2 Q and Baseline one-shot
+on:
+  push:
+    branches: [research/searchsorted-a-all-batch]
+    paths:
+      - 'research/searchsorted-a-all-batch/**'
+      - '.github/workflows/searchsorted-a-all-batch.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  one-shot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare source commits and exact environment
+        run: |
+          python -m pip install 'meson-python>=0.20' 'Cython>=3.1' ninja pytest hypothesis
+          mkdir -p /tmp/oneshot
+          lscpu > /tmp/oneshot/cpu.txt
+          cat /proc/loadavg > /tmp/oneshot/load-before.txt
+          cat /proc/meminfo > /tmp/oneshot/memory-before.txt
+          g++ --version > /tmp/oneshot/compiler.txt
+          python -m pip freeze > /tmp/oneshot/packages.txt
+          git fetch --no-tags https://github.com/numpy/numpy.git 82b2cf5518c8ccf163c3112efddd803764266fa2
+          git fetch origin 'research/searchsorted-a1-native' 'research/searchsorted-a2-native' 'perf/searchsorted-locality-selector'
+          git worktree add --detach /tmp/src-base 82b2cf5518c8ccf163c3112efddd803764266fa2
+          git worktree add --detach /tmp/src-a1 origin/research/searchsorted-a1-native
+          git worktree add --detach /tmp/src-a2 origin/research/searchsorted-a2-native
+          git worktree add --detach /tmp/src-q origin/perf/searchsorted-locality-selector
+          for mode in base a1 a2 q; do
+            git -C "/tmp/src-$mode" submodule update --init --recursive
+            git -C "/tmp/src-$mode" rev-parse HEAD >> /tmp/oneshot/commits.txt
+          done
+      - name: Build four isolated NumPy wheels on same runner
+        run: |
+          for mode in base a1 a2 q; do
+            mkdir -p "/tmp/wheel-$mode" "/tmp/np-$mode"
+            python -m pip wheel "/tmp/src-$mode" --no-build-isolation --no-deps -w "/tmp/wheel-$mode" -Csetup-args=-Dallow-noblas=true
+            python -m pip install --no-deps --target "/tmp/np-$mode" /tmp/wheel-$mode/*.whl
+          done
+      - name: Official focused correctness and independent baseline differential
+        run: |
+          cd /tmp
+          for mode in base a1 a2 q; do
+            echo "TEST $mode"
+            PYTHONPATH="/tmp/np-$mode" python -m pytest --pyargs numpy._core.tests.test_multiarray -k searchsorted -q
+          done
+      - name: Full matrix and adversarial matrix in one ABCCBBA-style sequence
+        run: |
+          cd /tmp
+          for matrix in monte_carlo adversarial_final; do
+            script="$GITHUB_WORKSPACE/research/searchsorted-structural-gate/$matrix.py"
+            for mode in base a1 a2 q q a1 a2 base; do
+              index_file="/tmp/oneshot/${matrix}_${mode}_count"
+              count=1
+              if [ -e "$index_file" ]; then count=2; fi
+              touch "$index_file"
+              echo "RUN $matrix $mode $count"
+              PYTHONPATH="/tmp/np-$mode" python "$script" > "/tmp/oneshot/${matrix}_${mode}_${count}.json"
+            done
+            python "$GITHUB_WORKSPACE/research/searchsorted-a-all-batch/compare.py" "$matrix"               "/tmp/oneshot/${matrix}_base_1.json"               "/tmp/oneshot/${matrix}_a1_1.json"               "/tmp/oneshot/${matrix}_a2_1.json"               "/tmp/oneshot/${matrix}_q_1.json"               "/tmp/oneshot/${matrix}_q_2.json"               "/tmp/oneshot/${matrix}_a1_2.json"               "/tmp/oneshot/${matrix}_a2_2.json"               "/tmp/oneshot/${matrix}_base_2.json" | tee "/tmp/oneshot/${matrix}_summary.txt"
+          done
+      - name: Capture resources after run
+        if: always()
+        run: |
+          cat /proc/loadavg > /tmp/oneshot/load-after.txt
+          cat /proc/meminfo > /tmp/oneshot/memory-after.txt
+          { cat /sys/fs/cgroup/memory.current || true; } > /tmp/oneshot/cgroup-after.txt
+          { cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq || true; } > /tmp/oneshot/freq-after.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-a1-a2-q-one-shot
+          path: /tmp/oneshot/
+          retention-days: 2
