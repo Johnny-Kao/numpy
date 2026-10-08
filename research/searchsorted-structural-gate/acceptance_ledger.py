@@ -30,22 +30,24 @@ def decision(a,keys,side):
    if i>0 and keys[i]<keys[i-1]:reversed_=True;break
  return "accepted" if not reversed_ and same and direction>=0 and length>1 else "structural_fallback"
 
-rng=np.random.default_rng(32895);out=[]
-for dtype in ("int32","int64","float64"):
- for n in (128,4096,65536,1048576):
-  a=np.arange(n,dtype=dtype)
-  for q in (1,16,64,1024,65536,1048576):
-   for pattern in ("random","sorted","repeated","clustered","alternating"):
-    if q==1048576 and pattern=="alternating":continue
-    keys=rng.integers(-n//10,n+n//10,size=q).astype(dtype)
-    if pattern=="sorted":keys.sort()
-    if pattern=="repeated":keys[:]=keys[0]
-    if pattern=="clustered":keys[:]=n//2;keys[::7]=n//2+1
-    if pattern=="alternating":keys[::2]=0;keys[1::2]=n-1
-    for side in ("left","right"):
-     for sorter in ((False,True) if n<=65536 and q<=65536 else (False,)):
-      # Search with sorter uses argbinsearch, not the optimized binsearch.
-      if sorter: rng.permutation(n)  # mirror benchmark RNG consumption
-      path="sorter_fallback" if sorter else decision(a,keys,side)
-      out.append(dict(dtype=dtype,n=n,q=q,pattern=pattern,side=side,sorter=sorter,path=path))
-print(json.dumps(out))
+if __name__ == '__main__':
+ rng=np.random.default_rng(32895);out=[]
+ for dtype in ("int32","int64","float64"):
+  for n in (128,4096,65536,1048576):
+   a=np.arange(n,dtype=dtype)
+   for q in (1,16,64,1024,65536,1048576):
+    for pattern in ("random","sorted","repeated","clustered","alternating"):
+     if q==1048576 and pattern=="alternating":continue
+     keys=rng.integers(-n//10,n+n//10,size=q).astype(dtype)
+     if pattern=="sorted":keys.sort()
+     if pattern=="repeated":keys[:]=keys[0]
+     if pattern=="clustered":keys[:]=n//2;keys[::7]=n//2+1
+     if pattern=="alternating":keys[::2]=0;keys[1::2]=n-1
+     for side in ("left","right"):
+      for sorter in ((False,True) if n<=65536 and q<=65536 else (False,)):
+       # Search with sorter uses argbinsearch, not the optimized binsearch.
+       if sorter: rng.permutation(n)  # mirror benchmark RNG consumption
+       path="sorter_fallback" if sorter else decision(a,keys,side)
+       out.append(dict(dtype=dtype,n=n,q=q,pattern=pattern,side=side,sorter=sorter,path=path))
+ print(json.dumps(out))
+ 
