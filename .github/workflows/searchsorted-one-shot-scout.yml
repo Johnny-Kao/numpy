@@ -1,0 +1,73 @@
+name: Searchsorted one-shot A B C scouting
+on:
+  push:
+    branches: [research/searchsorted-one-shot-scout]
+    paths:
+      - 'research/searchsorted-one-shot-scout/**'
+      - '.github/workflows/searchsorted-one-shot-scout.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  scout:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Snapshot machine and toolchain
+        run: |
+          mkdir -p /tmp/one-shot
+          lscpu > /tmp/one-shot/cpu.txt
+          grep -E 'MemTotal|MemAvailable' /proc/meminfo > /tmp/one-shot/memory-before.txt
+          cat /proc/loadavg > /tmp/one-shot/load-before.txt
+          { cat /sys/fs/cgroup/memory.current || true; } > /tmp/one-shot/cgroup-before.txt
+          { cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq || true; } > /tmp/one-shot/freq-before.txt
+          g++ --version > /tmp/one-shot/compiler.txt
+          git rev-parse HEAD > /tmp/one-shot/source-commit.txt
+      - name: Compile research probes once
+        run: |
+          g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/searchsorted-one-shot-scout/scout.cpp -o /tmp/one-shot/scout
+      - name: Run all patterns A B C plus reference and locality
+        run: |
+          /usr/bin/time -v /tmp/one-shot/scout > /tmp/one-shot/results.csv 2> /tmp/one-shot/time.txt
+          python3 - <<'PY'
+          import csv,statistics,collections
+          rows=list(csv.DictReader(open('/tmp/one-shot/results.csv')))
+          assert len(rows)==225,len(rows)
+          assert all(r['correct']=='1' for r in rows)
+          by=collections.defaultdict(dict)
+          for r in rows:by[(r['pattern'],r['n'],r['q'])][r['mode']]=float(r['median_ns'])
+          for mode in '1234':
+              ratios=[v['0']/v[mode] for v in by.values()]
+              print('mode',mode,'vs per-key independent reference','median',round(statistics.median(ratios),3),
+                    'worst',round(min(ratios),3),'regress_gt5',sum(x<.95 for x in ratios))
+          for pattern in sorted({k[0] for k in by}):
+              rr=[v['0']/v['1'] for k,v in by.items() if k[0]==pattern]
+              print('A',pattern,'median',round(statistics.median(rr),3),'worst',round(min(rr),3))
+          print('cases',len(by),'correctness',len(rows))
+          PY
+      - name: Snapshot resources after completion
+        if: always()
+        run: |
+          grep -E 'MemTotal|MemAvailable' /proc/meminfo > /tmp/one-shot/memory-after.txt
+          cat /proc/loadavg > /tmp/one-shot/load-after.txt
+          { cat /sys/fs/cgroup/memory.current || true; } > /tmp/one-shot/cgroup-after.txt
+          { cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq || true; } > /tmp/one-shot/freq-after.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: one-shot-${{ matrix.os }}
+          path: /tmp/one-shot/*.txt
+          retention-days: 2
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: measurements-${{ matrix.os }}
+          path: /tmp/one-shot/results.csv
+          retention-days: 2
