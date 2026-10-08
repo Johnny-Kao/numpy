@@ -146,7 +146,7 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
         *(npy_intp *)(ret + i * ret_str) = cmp(mid_val, key_val) * half;
     }
 
-    while (interval_length > 1) {
+    while (interval_length > 2) {
         npy_intp half = interval_length >> 1;
         interval_length -= half; // length -> ceil(length / 2)
 
@@ -169,6 +169,9 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
     for (npy_intp i = 0; i < key_len; ++i) {
         npy_intp &base = *(npy_intp *)(ret + i * ret_str);
         const T key_val = *(const T *)(key + i * key_str);
+        if (interval_length > 1) {
+            base += cmp(*(const T *)(arr + (base + 1) * arr_str), key_val);
+        }
         base += cmp(*(const T *)(arr + base * arr_str), key_val);
     }
 }
