@@ -1,0 +1,37 @@
+name: Searchsorted A0 isolated correctness
+on:
+  push:
+    branches:
+      - research/searchsorted-tail-a0-clean
+    paths:
+      - 'numpy/_core/src/npysort/binsearch.cpp'
+      - 'research/searchsorted-tail-a0-clean/**'
+      - '.github/workflows/searchsorted-a0-research.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  correctness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build this exact branch
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'meson-python>=0.20' 'Cython>=3.1' ninja pytest hypothesis
+          python -m pip install -e . --no-build-isolation -Csetup-args=-Dallow-noblas=true
+      - name: Validate focused correctness
+        run: |
+          cd /tmp
+          python "$GITHUB_WORKSPACE/research/searchsorted-tail-a0-clean/test_correctness.py"
+      - name: Run upstream searchsorted tests
+        run: |
+          cd /tmp
+          python -m pytest "$GITHUB_WORKSPACE/numpy/_core/tests/test_multiarray.py" -k searchsorted -q
