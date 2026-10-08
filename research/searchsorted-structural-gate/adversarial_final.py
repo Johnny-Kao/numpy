@@ -1,6 +1,6 @@
 import json,statistics,time,platform,resource
 import numpy as np
-from acceptance_ledger import decision
+
 rng=np.random.default_rng(20261009)
 rows=[]
 for dtype in ("int32","int64","float64"):
@@ -18,7 +18,11 @@ for dtype in ("int32","int64","float64"):
     elif pattern=="single_spike":x[free[len(free)//2]]=n-1
     elif pattern=="within_bucket_random":
      width=max(2,n//8);x[free]=rng.integers(max(0,n//2-width//2),min(n,n//2+width//2),size=len(free))
-    p=decision(a,x,side)
+    block_modes=[]
+    for start in range(0,q,256):
+     part=x[start:start+256]
+     block_modes.append('locality' if len(part)>1 and bool(np.all(part[1:]>=part[:-1])) else 'batched')
+    p='all_locality' if all(m=='locality' for m in block_modes) else ('all_batched' if all(m=='batched' for m in block_modes) else 'mixed')
     # Independent reference: the upstream baseline is checked separately by workflow ABBA;
     # basic insertion invariants are checked against a and x here.
     out=np.searchsorted(a,x,side=side)
