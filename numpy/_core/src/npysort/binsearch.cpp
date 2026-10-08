@@ -1,4 +1,6 @@
 /* -*- c -*- */
+#include <cstdio>
+#include <cstdlib>
 
 #define NPY_NO_DEPRECATED_API NPY_API_VERSION
 
@@ -179,6 +181,11 @@ binsearch_locality(const char *arr, const char *key, char *ret,
         }
     }
 
+    if (std::getenv("NPY_SEARCHSORTED_TRACE")) {
+        std::fprintf(stderr, "SEARCHSORTED_PATH %s\\n",
+                     (!reversed && same_bucket && direction >= 0 &&
+                      interval_length > 1) ? "accepted" : "structural_fallback");
+    }
     if (!reversed && same_bucket && direction >= 0 && interval_length > 1) {
         npy_intp previous_pos = 0;
         T last_key_val = *(const T *)key;
@@ -273,6 +280,9 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
             arr_str == (npy_intp)sizeof(T);
 
     if (!locality_candidate) {
+        if (std::getenv("NPY_SEARCHSORTED_TRACE")) {
+            std::fprintf(stderr, "SEARCHSORTED_PATH metadata_fallback\\n");
+        }
         binsearch_current<Tag, side>(arr, key, ret, arr_len, key_len, arr_str,
                                      key_str, ret_str);
         return;
