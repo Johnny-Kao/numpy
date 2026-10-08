@@ -1,7 +1,7 @@
 name: Searchsorted structural no-Q gate ABBA matrix
 on:
   push:
-    branches: [research/searchsorted-maintainer-exact]
+    branches: [research/searchsorted-structural-gate]
     paths:
       - 'research/searchsorted-structural-gate/benchmark.py'
       - 'research/searchsorted-structural-gate/compare.py'
