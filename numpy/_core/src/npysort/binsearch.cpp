@@ -222,7 +222,7 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
     // Block size is experimental, not an accepted production threshold.
     constexpr npy_intp BLOCK_KEYS = 256;
     for (npy_intp start = 0; start < key_len;) {
-        const npy_intp count = std::min(BLOCK_KEYS, key_len - start);
+        const npy_intp count = (BLOCK_KEYS < key_len - start ? BLOCK_KEYS : key_len - start);
         const char *chunk_key = key + start * key_str;
         char *chunk_ret = ret + start * ret_str;
         bool ordered = count > 1 &&
