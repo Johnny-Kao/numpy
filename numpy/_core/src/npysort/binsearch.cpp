@@ -147,7 +147,7 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
     }
 
     // Fuse the final passes per key, following the maintainer's proposal.
-    constexpr npy_intp threshold = 2;
+    constexpr npy_intp threshold = 4;
     while (interval_length > threshold) {
         npy_intp half = interval_length >> 1;
         interval_length -= half;
