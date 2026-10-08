@@ -146,9 +146,11 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
         *(npy_intp *)(ret + i * ret_str) = cmp(mid_val, key_val) * half;
     }
 
-    while (interval_length > 1) {
+    // Fuse the final passes per key, following the maintainer's proposal.
+    constexpr npy_intp threshold = 2;
+    while (interval_length > threshold) {
         npy_intp half = interval_length >> 1;
-        interval_length -= half; // length -> ceil(length / 2)
+        interval_length -= half;
 
         for (npy_intp i = 0; i < key_len; ++i) {
             npy_intp &base = *(npy_intp *)(ret + i * ret_str);
@@ -158,17 +160,18 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
         }
     }
 
-    /*
-    At this point interval_length == 1, so the candidates are in the 
-    interval [base, base + 1].
-
-    We have two options:
-        If cmp(arr[base], key_val) == true, insertion index is base + 1
-        Otherwise the insertion order is just base
-    */
     for (npy_intp i = 0; i < key_len; ++i) {
         npy_intp &base = *(npy_intp *)(ret + i * ret_str);
         const T key_val = *(const T *)(key + i * key_str);
+        npy_intp length = interval_length;
+
+        while (length > 1) {
+            npy_intp half = length >> 1;
+            length -= half;
+            const T mid_val = *(const T *)(arr + (base + half) * arr_str);
+            base += cmp(mid_val, key_val) * half;
+        }
+
         base += cmp(*(const T *)(arr + base * arr_str), key_val);
     }
 }
