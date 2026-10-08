@@ -45,6 +45,7 @@ for dtype in ("int32","int64","float64"):
     for side in ("left","right"):
      for sorter in ((False,True) if n<=65536 and q<=65536 else (False,)):
       # Search with sorter uses argbinsearch, not the optimized binsearch.
+      if sorter: rng.permutation(n)  # mirror benchmark RNG consumption
       path="sorter_fallback" if sorter else decision(a,keys,side)
       out.append(dict(dtype=dtype,n=n,q=q,pattern=pattern,side=side,sorter=sorter,path=path))
 print(json.dumps(out))
