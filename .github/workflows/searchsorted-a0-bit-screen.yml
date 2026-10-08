@@ -1,0 +1,28 @@
+name: Searchsorted A0 targeted regression and bit-state screening
+on:
+  push:
+    branches: [research/searchsorted-tail-a0-clean]
+    paths:
+      - 'research/searchsorted-tail-a0-clean/bit_state_screen.cpp'
+      - '.github/workflows/searchsorted-a0-bit-screen.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  one-bit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile independent exact-rank one-bit probe
+        run: g++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra research/searchsorted-tail-a0-clean/bit_state_screen.cpp -o /tmp/bit-screen
+      - name: Correctness and batched 96-case matrix
+        run: /tmp/bit-screen | tee /tmp/bit-screen.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: one-bit-state-screen
+          path: /tmp/bit-screen.txt
+          retention-days: 2
