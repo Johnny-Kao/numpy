@@ -182,7 +182,7 @@ binsearch_locality(const char *arr, const char *key, char *ret,
     }
 
     if (std::getenv("NPY_SEARCHSORTED_TRACE")) {
-        std::fprintf(stderr, "SEARCHSORTED_PATH %s\\n",
+        std::fprintf(stderr, "SEARCHSORTED_PATH %s\n",
                      (!reversed && same_bucket && direction >= 0 &&
                       interval_length > 1) ? "accepted" : "structural_fallback");
     }
@@ -281,7 +281,7 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
 
     if (!locality_candidate) {
         if (std::getenv("NPY_SEARCHSORTED_TRACE")) {
-            std::fprintf(stderr, "SEARCHSORTED_PATH metadata_fallback\\n");
+            std::fprintf(stderr, "SEARCHSORTED_PATH metadata_fallback\n");
         }
         binsearch_current<Tag, side>(arr, key, ret, arr_len, key_len, arr_str,
                                      key_str, ret_str);
