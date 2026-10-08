@@ -83,7 +83,10 @@ binsearch_current(const char *arr, const char *key, char *ret,
         *(npy_intp *)(ret + i * ret_str) = cmp(mid_val, key_val) * half;
     }
 
-    while (interval_length > 1) {
+    // Research-only: finish the last two levels per key so that each
+    // key and its intermediate base can be reused in the same inner loop.
+    // Leave earlier levels batched to preserve cross-key parallelism.
+    while (interval_length > 2) {
         half = interval_length >> 1;
         interval_length -= half;
         for (npy_intp i = 0; i < key_len; ++i) {
@@ -97,6 +100,13 @@ binsearch_current(const char *arr, const char *key, char *ret,
     for (npy_intp i = 0; i < key_len; ++i) {
         npy_intp &base = *(npy_intp *)(ret + i * ret_str);
         const T key_val = *(const T *)(key + i * key_str);
+        npy_intp length = interval_length;
+        while (length > 1) {
+            const npy_intp step = length >> 1;
+            length -= step;
+            const T pivot = *(const T *)(arr + (base + step) * arr_str);
+            base += cmp(pivot, key_val) * step;
+        }
         base += cmp(*(const T *)(arr + base * arr_str), key_val);
     }
 }
