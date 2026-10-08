@@ -25,7 +25,7 @@ jobs:
       - name: Install build requirements
         run: |
           python -m pip install --upgrade pip
-          python -m pip install 'meson-python>=0.20' 'Cython>=3.1' ninja
+          python -m pip install 'meson-python>=0.20' 'Cython>=3.1' ninja pytest hypothesis
       - name: Prepare exact upstream baseline
         run: |
           git fetch --no-tags https://github.com/numpy/numpy.git 82b2cf5518c8ccf163c3112efddd803764266fa2
