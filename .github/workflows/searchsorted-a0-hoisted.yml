@@ -44,7 +44,7 @@ jobs:
         run: |
           cd /tmp
           PYTHONPATH=/tmp/np-a0 python "$GITHUB_WORKSPACE/research/searchsorted-tail-a0-clean/test_correctness.py"
-          PYTHONPATH=/tmp/np-a0 python -m pytest "$GITHUB_WORKSPACE/numpy/_core/tests/test_multiarray.py" -k searchsorted -q
+          PYTHONPATH=/tmp/np-a0 python -m pytest --pyargs numpy._core.tests.test_multiarray -k searchsorted -q
       - name: Benchmark identical cases in ABBA order
         run: |
           cd /tmp
