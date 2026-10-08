@@ -1,0 +1,89 @@
+name: Searchsorted malicious interiors worst-case ABBA
+on:
+  push:
+    branches: [research/searchsorted-adversarial-final]
+    paths:
+      - 'research/searchsorted-structural-gate/adversarial_final.py'
+      - 'research/searchsorted-structural-gate/adversarial_compare.py'
+      - '.github/workflows/searchsorted-adversarial-final.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install build requirements
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'meson-python>=0.20' 'Cython>=3.1' ninja pytest hypothesis
+      - name: Prepare exact upstream baseline
+        run: |
+          git fetch --no-tags https://github.com/numpy/numpy.git 82b2cf5518c8ccf163c3112efddd803764266fa2
+          git worktree add --detach /tmp/numpy-base 82b2cf5518c8ccf163c3112efddd803764266fa2
+          git -C /tmp/numpy-base submodule update --init --recursive
+      - name: Build separate wheels
+        run: |
+          mkdir -p /tmp/wheel-base /tmp/wheel-a0
+          python -m pip wheel /tmp/numpy-base --no-build-isolation --no-deps -w /tmp/wheel-base -Csetup-args=-Dallow-noblas=true
+          python -m pip wheel . --no-build-isolation --no-deps -w /tmp/wheel-a0 -Csetup-args=-Dallow-noblas=true
+      - name: Install isolated wheels
+        run: |
+          python -m pip install --no-deps --target /tmp/np-base /tmp/wheel-base/*.whl
+          python -m pip install --no-deps --target /tmp/np-a0 /tmp/wheel-a0/*.whl
+      - name: Validate upstream searchsorted correctness
+        run: |
+          cd /tmp
+          PYTHONPATH=/tmp/np-a0 python -m pytest --pyargs numpy._core.tests.test_multiarray -k searchsorted -q
+      - name: Record runner hardware and initial memory
+        run: |
+          cd /tmp
+          lscpu > hardware.txt
+          cat /proc/meminfo > memory_before.txt
+          cat /proc/loadavg > load_before.txt
+          uname -a >> hardware.txt
+          python -m pip freeze > python_packages.txt
+          { cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq || true; } > freq_before.txt
+          { cat /sys/fs/cgroup/memory.current || true; } > cgroup_memory_before.txt
+      - name: Benchmark identical cases in ABBA order
+        run: |
+          cd /tmp
+          PYTHONPATH=/tmp/np-base python "$GITHUB_WORKSPACE/research/searchsorted-structural-gate/adversarial_final.py" > base1.json
+          PYTHONPATH=/tmp/np-a0 python "$GITHUB_WORKSPACE/research/searchsorted-structural-gate/adversarial_final.py" > a0_1.json
+          PYTHONPATH=/tmp/np-a0 python "$GITHUB_WORKSPACE/research/searchsorted-structural-gate/adversarial_final.py" > a0_2.json
+          PYTHONPATH=/tmp/np-base python "$GITHUB_WORKSPACE/research/searchsorted-structural-gate/adversarial_final.py" > base2.json
+          python "$GITHUB_WORKSPACE/research/searchsorted-structural-gate/adversarial_compare.py" base1.json a0_1.json a0_2.json base2.json | tee summary.txt
+      - name: Record post-run resources
+        if: always()
+        run: |
+          cd /tmp
+          cat /proc/meminfo > memory_after.txt
+          cat /proc/loadavg > load_after.txt
+          { cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq || true; } > freq_after.txt
+          { cat /sys/fs/cgroup/memory.current || true; } > cgroup_memory_after.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: structural-adversarial-final
+          path: |
+            /tmp/base1.json
+            /tmp/a0_1.json
+            /tmp/a0_2.json
+            /tmp/base2.json
+            /tmp/summary.txt
+            /tmp/hardware.txt
+            /tmp/memory_*.txt
+            /tmp/load_*.txt
+            /tmp/freq_*.txt
+            /tmp/cgroup_memory_*.txt
+            /tmp/python_packages.txt
+          retention-days: 2
