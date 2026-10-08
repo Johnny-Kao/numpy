@@ -140,10 +140,13 @@ binsearch_locality(const char *arr, const char *key, char *ret,
     bool reversed = false;
     int direction = 0;
     npy_intp prev = *(npy_intp *)ret;
+    const npy_intp first_bucket = prev;
+    bool same_bucket = true;
     const npy_intp last = key_len - 1;
     for (npy_intp j = 1; j <= LOCALITY_SAMPLES; ++j) {
         const npy_intp i = (j * last) >> 4;
         const npy_intp pos = *(npy_intp *)(ret + i * ret_str);
+        if (pos != first_bucket) same_bucket = false;
         if (pos > prev) {
             if (direction < 0) { reversed = true; break; }
             direction = 1;
@@ -155,7 +158,7 @@ binsearch_locality(const char *arr, const char *key, char *ret,
         prev = pos;
     }
 
-    if (!reversed && direction >= 0) {
+    if (!reversed && same_bucket && direction >= 0) {
         /*
          * Sparse coarse samples can look monotone even when the query sequence
          * between them is hostile to the locality path. Check the value
@@ -176,7 +179,7 @@ binsearch_locality(const char *arr, const char *key, char *ret,
         }
     }
 
-    if (!reversed && direction >= 0 && interval_length > 1) {
+    if (!reversed && same_bucket && direction >= 0 && interval_length > 1) {
         npy_intp previous_pos = 0;
         T last_key_val = *(const T *)key;
         for (npy_intp i = 0; i < key_len; ++i) {
@@ -257,28 +260,15 @@ binsearch(const char *arr, const char *key, char *ret, npy_intp arr_len,
     }
 
     /*
-     * Keep the historical batched search in a separate non-inlined function
-     * so below-gate execution is isolated from locality-path code layout.
-     *
-     * LOCALITY_MIN_KEYS is a tunable portable default, not an algorithmic or
-     * hardware boundary.  In validation performed on 2026-10-04, the tested
-     * AMD runners tolerated much smaller activation sizes (around Q=64 in the
-     * activation sweep), while the tested Intel runner required substantially
-     * larger batches (around Q=1024 still missed the conservative p95 target).
-     * Production-shaped tests also found non-target regressions at lower
-     * portable gates around Q=131072 and Q=262144.
-     *
-     * We therefore use Q=2^20 as a conservative cross-machine safety bound for
-     * the initial implementation.  Future CPUs, compilers, memory systems, or
-     * execution backends may shift this crossover.  A stronger low-cost
-     * selector may also justify lowering or replacing this fixed Q gate.
-     *
-     * The current choice intentionally favors portability and general-case
-     * safety over capturing every profitable smaller-locality workload.
+     * Research-only structural gate: do not use a hardware-calibrated Q
+     * crossover. Require enough distinct sample positions and contiguous
+     * inputs. The coarse search below then checks whether all sampled keys
+     * remain in the same coarse bucket before accepting the locality path.
+     * Sampling is only a hint, not a proof about unsampled query keys.
      */
-    constexpr npy_intp LOCALITY_MIN_KEYS = 1 << 20;
+    constexpr npy_intp LOCALITY_SAMPLES = 16;
     const bool locality_candidate =
-            key_len >= LOCALITY_MIN_KEYS &&
+            key_len > LOCALITY_SAMPLES &&
             key_str == (npy_intp)sizeof(T) &&
             arr_str == (npy_intp)sizeof(T);
 
