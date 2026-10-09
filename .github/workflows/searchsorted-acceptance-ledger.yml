@@ -1,42 +1,20 @@
 name: Searchsorted structural acceptance ledger
 on:
-  push:
-    branches: [research/searchsorted-structural-gate]
-    paths:
-      - 'research/searchsorted-structural-gate/acceptance_ledger.py'
-      - '.github/workflows/searchsorted-acceptance-ledger.yml'
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  ledger:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
+  screen:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Install NumPy and validate acceptance decisions
-        run: |
-          python -m pip install numpy
-          python research/searchsorted-structural-gate/acceptance_ledger.py > /tmp/acceptance-ledger.json
-          python - <<'PY'
-          import json, collections
-          a=json.load(open('/tmp/acceptance-ledger.json'))
-          counts=collections.Counter(x['path'] for x in a)
-          print('cases',len(a),'path_counts',dict(counts))
-          for pattern in ('random','sorted','repeated','clustered','alternating'):
-              xs=[x for x in a if x['pattern']==pattern and not x['sorter']]
-              print('pattern',pattern,'accepted',sum(x['path']=='accepted' for x in xs),'total',len(xs))
-          for q in (1,16,64,1024,65536,1048576):
-              xs=[x for x in a if x['q']==q and not x['sorter']]
-              print('q',q,'accepted',sum(x['path']=='accepted' for x in xs),'total',len(xs))
-          PY
+      - name: Run lightweight Q-free interval classification
+        run: python research/searchsorted-qfree-interval-screen.py | tee interval-screen.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: searchsorted-acceptance-ledger
-          path: /tmp/acceptance-ledger.json
+          name: qfree-interval-results
+          path: interval-screen.txt
           retention-days: 2
