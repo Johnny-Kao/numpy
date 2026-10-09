@@ -1,0 +1,104 @@
+name: NumPy Intel Q sensitivity bounded scout
+on:
+  push:
+    branches: [research/searchsorted-intel-cpu-screen]
+    paths:
+      - 'research/searchsorted-intel-cpu-screen/**'
+      - '.github/workflows/searchsorted-intel-q.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  q-sensitivity:
+    strategy:
+      fail-fast: false
+      matrix:
+        slot: [1,2,3,4,5,6,7,8,9,10]
+        os: [ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 110
+    steps:
+      - name: Preflight CPU vendor check (no expensive work for non-Intel)
+        id: cpu
+        run: |
+          set -euo pipefail
+          vendor="$(lscpu | awk -F: '/^Vendor ID:/{gsub(/^ +/,"",$2);print $2;exit}')"
+          model="$(lscpu | awk -F: '/^Model name:/{gsub(/^ +/,"",$2);print $2;exit}')"
+          echo "CPU vendor: $vendor ; model: $model ; slot: ${{ matrix.slot }}"
+          if [ "$vendor" = GenuineIntel ]; then
+            echo "intel=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::ACCEPT_INTEL $model"
+          else
+            echo "intel=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::SKIP_NON_INTEL $model"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.cpu.outputs.intel == 'true'
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        if: steps.cpu.outputs.intel == 'true'
+        with:
+          python-version: '3.12'
+      - name: Machine metadata and build environment
+        if: steps.cpu.outputs.intel == 'true'
+        run: |
+          mkdir -p /tmp/qstudy
+          lscpu > /tmp/qstudy/cpu.txt
+          cat /proc/meminfo > /tmp/qstudy/memory-before.txt
+          cat /proc/loadavg > /tmp/qstudy/load-before.txt
+          git rev-parse HEAD > /tmp/qstudy/commit.txt
+          python -m pip install 'meson-python>=0.20' 'Cython>=3.1' ninja pytest hypothesis
+          python -m pip freeze > /tmp/qstudy/packages.txt
+      - name: Compile baseline and Q gates from same NumPy source
+        if: steps.cpu.outputs.intel == 'true'
+        run: |
+          for mode in base q12 q14 q16 q18 q20 q22; do
+            cp -a "$GITHUB_WORKSPACE" "/tmp/build-$mode"
+            case "$mode" in
+              base) gate=4611686018427387904;;
+              q12) gate=4096;;
+              q14) gate=16384;;
+              q16) gate=65536;;
+              q18) gate=262144;;
+              q20) gate=1048576;;
+              q22) gate=4194304;;
+            esac
+            sed -i "s/NPY_LOCALITY_Q_STUDY/$gate/g" "/tmp/build-$mode/numpy/_core/src/npysort/binsearch.cpp"
+            mkdir -p "/tmp/wheel-$mode" "/tmp/np-$mode"
+            python -m pip wheel "/tmp/build-$mode" --no-build-isolation --no-deps -w "/tmp/wheel-$mode" -Csetup-args=-Dallow-noblas=true
+            python -m pip install --no-deps --target "/tmp/np-$mode" "/tmp/wheel-$mode/"*.whl
+          done
+      - name: Correctness across all compiled variants
+        if: steps.cpu.outputs.intel == 'true'
+        run: |
+          cd /tmp
+          for mode in base q12 q14 q16 q18 q20 q22; do
+            PYTHONPATH="/tmp/np-$mode" python -m pytest --pyargs numpy._core.tests.test_multiarray -k searchsorted -q | tee "/tmp/qstudy/tests-$mode.txt"
+          done
+      - name: Q sweep A-B-B-A matched replicates
+        if: steps.cpu.outputs.intel == 'true'
+        run: |
+          cd /tmp
+          for mode in base q12 q14 q16 q18 q20 q22 q22 q20 q18 q16 q14 q12 base; do
+            count=1
+            if [ -e "/tmp/qstudy/${mode}_1.json" ]; then count=2; fi
+            echo "Benchmark $mode repetition $count"
+            PYTHONPATH="/tmp/np-$mode" python "$GITHUB_WORKSPACE/research/searchsorted-q-sensitivity/measure.py" > "/tmp/qstudy/${mode}_${count}.json"
+          done
+          python "$GITHUB_WORKSPACE/research/searchsorted-q-sensitivity/compare.py" | tee /tmp/qstudy/summary.txt
+      - name: Post-run resource snapshot
+        if: steps.cpu.outputs.intel == 'true'
+        if: always()
+        run: |
+          cat /proc/meminfo > /tmp/qstudy/memory-after.txt
+          cat /proc/loadavg > /tmp/qstudy/load-after.txt
+          { cat /sys/fs/cgroup/memory.current || true; } > /tmp/qstudy/cgroup-after.txt
+      - uses: actions/upload-artifact@v4
+        if: steps.cpu.outputs.intel == 'true'
+        if: always()
+        with:
+          name: intel-q-study-${{ matrix.slot }}
+          path: /tmp/qstudy/
+          retention-days: 2
