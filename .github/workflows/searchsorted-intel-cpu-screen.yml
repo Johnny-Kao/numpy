@@ -1,0 +1,58 @@
+name: Searchsorted Intel CPU inventory (bounded)
+on:
+  push:
+    branches: [research/searchsorted-intel-cpu-screen]
+    paths:
+      - '.github/workflows/searchsorted-intel-cpu-screen.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe-linux:
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        slot: [1,2,3,4,5,6,7,8,9,10]
+        os: [ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 3
+    steps:
+      - name: Detect CPU only (no checkout and no compilation)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/intel-scout
+          lscpu > /tmp/intel-scout/cpu.txt
+          model=$(grep -m1 '^Model name:' /tmp/intel-scout/cpu.txt | cut -d: -f2- | sed 's/^ *//')
+          vendor=$(grep -m1 '^Vendor ID:' /tmp/intel-scout/cpu.txt | cut -d: -f2- | xargs)
+          printf 'slot=%s\nrunner=%s\nvendor=%s\nmodel=%s\n' '${{ matrix.slot }}' '${{ matrix.os }}' "$vendor" "$model" | tee /tmp/intel-scout/summary.txt
+          if [[ "$vendor" == "GenuineIntel" ]]; then
+            echo "INTEL_FOUND=1" >> "$GITHUB_ENV"
+            echo "::notice::INTEL_FOUND slot=${{ matrix.slot }} $model"
+          else
+            echo "INTEL_FOUND=0" >> "$GITHUB_ENV"
+            echo "::notice::SKIP_NON_INTEL slot=${{ matrix.slot }} $model"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: intel-screen-linux-${{ matrix.slot }}
+          path: /tmp/intel-scout/
+          retention-days: 2
+  probe-macos-intel:
+    runs-on: macos-15-intel
+    timeout-minutes: 4
+    steps:
+      - name: Verify actual CPU, OS and virtualization
+        run: |
+          mkdir -p /tmp/intel-scout
+          sysctl -n machdep.cpu.brand_string | tee /tmp/intel-scout/cpu.txt
+          sysctl -n machdep.cpu.vendor >> /tmp/intel-scout/cpu.txt
+          uname -a > /tmp/intel-scout/system.txt
+          sw_vers >> /tmp/intel-scout/system.txt
+          printf 'runner=macos-15-intel\nmodel=%s\n' "$(head -1 /tmp/intel-scout/cpu.txt)" | tee /tmp/intel-scout/summary.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: intel-screen-macos
+          path: /tmp/intel-scout/
+          retention-days: 2
