@@ -89,15 +89,13 @@ jobs:
           done
           python "$GITHUB_WORKSPACE/research/searchsorted-q-sensitivity/compare.py" | tee /tmp/qstudy/summary.txt
       - name: Post-run resource snapshot
-        if: steps.cpu.outputs.intel == 'true'
-        if: always()
+        if: always() && steps.cpu.outputs.intel == 'true'
         run: |
           cat /proc/meminfo > /tmp/qstudy/memory-after.txt
           cat /proc/loadavg > /tmp/qstudy/load-after.txt
           { cat /sys/fs/cgroup/memory.current || true; } > /tmp/qstudy/cgroup-after.txt
       - uses: actions/upload-artifact@v4
-        if: steps.cpu.outputs.intel == 'true'
-        if: always()
+        if: always() && steps.cpu.outputs.intel == 'true'
         with:
           name: intel-q-study-${{ matrix.slot }}
           path: /tmp/qstudy/
